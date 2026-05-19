@@ -1,0 +1,406 @@
+/* ================================================================
+   FinanceHub — Tema escuro profissional
+   Paleta de cores:
+     Fundo principal  : #0F1117
+     Fundo elevado    : #1A1D27   (cards, sidebar)
+     Fundo 2° nível   : #242736   (inputs, hover)
+     Borda sutil      : #2E3250
+     Texto primário   : #E8EAED
+     Texto secundário : #8B90A7
+     Verde (positivo) : #00C896
+     Vermelho (negativo): #FF6B6B
+     Azul (info)      : #4A9EFF
+     Laranja (aviso)  : #FFB347
+================================================================ */
+
+/* ---- Reset base ------------------------------------------- */
+QWidget {
+    background-color: #0F1117;
+    color: #E8EAED;
+    font-family: "Inter", "Segoe UI", "Roboto", sans-serif;
+    font-size: 14px;
+    border: none;
+    outline: none;
+}
+
+/* ---- Sidebar ----------------------------------------------- */
+QFrame#sidebar {
+    background-color: #1A1D27;
+    border-right: 1px solid #2E3250;
+}
+
+QWidget#sidebarLogo {
+    background-color: transparent;
+    padding: 20px 16px 12px 16px;
+    border-bottom: 1px solid #2E3250;
+}
+
+QLabel#logoLabel {
+    color: #E8EAED;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+/* Botões de navegação da sidebar */
+QPushButton#navButton {
+    background-color: transparent;
+    color: #8B90A7;
+    text-align: left;
+    padding: 12px 20px;
+    margin: 2px 8px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QPushButton#navButton:hover {
+    background-color: #242736;
+    color: #E8EAED;
+}
+
+/* Estado ativo: página atual selecionada */
+QPushButton#navButton:checked {
+    background-color: #242736;
+    color: #4A9EFF;
+    border-left: 3px solid #4A9EFF;
+    padding-left: 17px; /* compensa a borda de 3px */
+}
+
+QPushButton#navButton:pressed {
+    background-color: #2E3250;
+}
+
+/* ---- Header ----------------------------------------------- */
+QFrame#header {
+    background-color: #1A1D27;
+    border-bottom: 1px solid #2E3250;
+}
+
+QLabel#headerTitle {
+    color: #E8EAED;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+/* ---- Cards de resumo -------------------------------------- */
+QFrame#summaryCard {
+    background-color: #1A1D27;
+    border: 1px solid #2E3250;
+    border-radius: 12px;
+}
+
+QFrame#summaryCard:hover {
+    border-color: #4A9EFF;
+}
+
+QLabel#cardTitle {
+    color: #8B90A7;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+}
+
+QLabel#cardValue {
+    font-size: 24px;
+    font-weight: 700;
+}
+
+/* ---- Seções e títulos ------------------------------------- */
+QLabel#sectionTitle {
+    color: #E8EAED;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+QLabel#loadingLabel {
+    color: #8B90A7;
+    font-size: 14px;
+    padding: 32px;
+}
+
+/* ---- Placeholder do gráfico ------------------------------- */
+QFrame#chartPlaceholder {
+    background-color: #1A1D27;
+    border: 1px dashed #2E3250;
+    border-radius: 12px;
+}
+
+QLabel#chartPlaceholderLabel {
+    color: #8B90A7;
+    font-size: 14px;
+}
+
+/* ---- Alertas ---------------------------------------------- */
+QFrame#alertItem {
+    background-color: #1A1D27;
+    border: 1px solid #2E3250;
+    border-radius: 8px;
+}
+
+QFrame#alertItem:hover {
+    background-color: #242736;
+    border-color: #3D4466;
+}
+
+QLabel#alertTitle {
+    color: #E8EAED;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QLabel#alertMessage {
+    color: #8B90A7;
+    font-size: 12px;
+}
+
+QLabel#noAlertsLabel {
+    color: #8B90A7;
+    font-size: 13px;
+    padding: 16px 0;
+}
+
+/* ---- Dashboard scroll area -------------------------------- */
+QScrollArea#dashboardScroll {
+    background-color: #0F1117;
+}
+
+QWidget#dashboardContent {
+    background-color: #0F1117;
+}
+
+/* ---- Tabelas (QTableWidget / QTableView) ------------------- */
+QTableWidget,
+QTableView {
+    background-color: #1A1D27;
+    alternate-background-color: #1E2133;
+    gridline-color: #2E3250;
+    border: 1px solid #2E3250;
+    border-radius: 8px;
+    selection-background-color: #242736;
+    selection-color: #E8EAED;
+}
+
+QTableWidget::item,
+QTableView::item {
+    padding: 8px 12px;
+    border: none;
+}
+
+QTableWidget::item:selected,
+QTableView::item:selected {
+    background-color: #2E3250;
+    color: #E8EAED;
+}
+
+QHeaderView::section {
+    background-color: #242736;
+    color: #8B90A7;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 10px 12px;
+    border: none;
+    border-bottom: 1px solid #2E3250;
+}
+
+QHeaderView::section:hover {
+    background-color: #2E3250;
+    color: #E8EAED;
+}
+
+/* ---- Inputs e campos de texto ----------------------------- */
+QLineEdit,
+QTextEdit,
+QPlainTextEdit {
+    background-color: #1A1D27;
+    border: 1px solid #2E3250;
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: #E8EAED;
+    font-size: 14px;
+}
+
+QLineEdit:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus {
+    border-color: #4A9EFF;
+    background-color: #1E2133;
+}
+
+QLineEdit:disabled,
+QTextEdit:disabled {
+    color: #8B90A7;
+    background-color: #151820;
+}
+
+QLineEdit::placeholder,
+QLineEdit[placeholderText] {
+    color: #4A5270;
+}
+
+/* ---- ComboBox (dropdowns) --------------------------------- */
+QComboBox {
+    background-color: #1A1D27;
+    border: 1px solid #2E3250;
+    border-radius: 8px;
+    padding: 8px 14px;
+    color: #E8EAED;
+    font-size: 14px;
+    min-width: 120px;
+}
+
+QComboBox:hover {
+    border-color: #4A9EFF;
+}
+
+QComboBox:focus {
+    border-color: #4A9EFF;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 28px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1A1D27;
+    border: 1px solid #2E3250;
+    border-radius: 8px;
+    selection-background-color: #242736;
+    selection-color: #E8EAED;
+    padding: 4px;
+}
+
+/* ---- Botões de ação --------------------------------------- */
+QPushButton {
+    background-color: #242736;
+    color: #E8EAED;
+    border: 1px solid #2E3250;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: #2E3250;
+    border-color: #4A9EFF;
+    color: #4A9EFF;
+}
+
+QPushButton:pressed {
+    background-color: #3D4466;
+}
+
+QPushButton:disabled {
+    color: #4A5270;
+    background-color: #1A1D27;
+    border-color: #1E2133;
+}
+
+/* Botão primário — ação principal */
+QPushButton[class="primary"] {
+    background-color: #4A9EFF;
+    color: #0F1117;
+    border: none;
+    font-weight: 600;
+}
+
+QPushButton[class="primary"]:hover {
+    background-color: #6AB0FF;
+}
+
+/* Botão de sucesso — confirmar / salvar */
+QPushButton[class="success"] {
+    background-color: #00C896;
+    color: #0F1117;
+    border: none;
+    font-weight: 600;
+}
+
+QPushButton[class="success"]:hover {
+    background-color: #00DFA8;
+}
+
+/* Botão de perigo — excluir */
+QPushButton[class="danger"] {
+    background-color: #FF6B6B;
+    color: #0F1117;
+    border: none;
+    font-weight: 600;
+}
+
+QPushButton[class="danger"]:hover {
+    background-color: #FF8585;
+}
+
+/* ---- Scrollbars ------------------------------------------- */
+QScrollBar:vertical {
+    background-color: #1A1D27;
+    width: 8px;
+    border-radius: 4px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #3D4466;
+    border-radius: 4px;
+    min-height: 32px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #4A9EFF;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    background-color: #1A1D27;
+    height: 8px;
+    border-radius: 4px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #3D4466;
+    border-radius: 4px;
+    min-width: 32px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #4A9EFF;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+/* ---- Tooltips --------------------------------------------- */
+QToolTip {
+    background-color: #242736;
+    color: #E8EAED;
+    border: 1px solid #2E3250;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+/* ---- Mensagens de status / labels especiais --------------- */
+QLabel[status="positive"] { color: #00C896; }
+QLabel[status="negative"] { color: #FF6B6B; }
+QLabel[status="info"]     { color: #4A9EFF; }
+QLabel[status="warning"]  { color: #FFB347; }
+
+/* ---- Separadores ------------------------------------------ */
+QFrame[frameShape="4"],   /* HLine */
+QFrame[frameShape="5"] {  /* VLine */
+    color: #2E3250;
+    background-color: #2E3250;
+}
