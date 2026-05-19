@@ -12,6 +12,7 @@ uvicorn[standard]>=0.30.0       # Servidor ASGI para rodar o FastAPI
 
 # --- Banco de dados e ORM ---
 SQLAlchemy>=2.0.36
+aiosqlite>=0.20.0               # Driver assíncrono para SQLite (usado pelo SQLAlchemy async)
 alembic>=1.14.0                 # Migrações de schema (SQLite em dev → PostgreSQL em prod)
 
 # --- Gráficos ---
@@ -20,6 +21,9 @@ plotly>=5.22.0
 # --- Dados de mercado ---
 yfinance>=0.2.50                # Cotações e dados de ativos (B3, NYSE etc.)
 python-bcb>=0.3.0               # Indicadores do Banco Central do Brasil (SELIC, IPCA etc.)
+
+# --- Configuração e variáveis de ambiente ---
+pydantic-settings>=2.4.0         # Leitura tipada de variáveis de ambiente e arquivo .env
 
 # --- Testes ---
 pytest>=8.3.0
