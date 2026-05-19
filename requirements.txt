@@ -1,0 +1,26 @@
+# ============================================================
+# FinanceHub — Dependências do projeto
+# ============================================================
+
+# --- Interface gráfica ---
+PyQt6>=6.7.0
+PyQt6-WebEngine>=6.7.0          # Renderização de gráficos Plotly dentro do PyQt6
+
+# --- API interna ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0       # Servidor ASGI para rodar o FastAPI
+
+# --- Banco de dados e ORM ---
+SQLAlchemy>=2.0.36
+alembic>=1.14.0                 # Migrações de schema (SQLite em dev → PostgreSQL em prod)
+
+# --- Gráficos ---
+plotly>=5.22.0
+
+# --- Dados de mercado ---
+yfinance>=0.2.50                # Cotações e dados de ativos (B3, NYSE etc.)
+python-bcb>=0.3.0               # Indicadores do Banco Central do Brasil (SELIC, IPCA etc.)
+
+# --- Testes ---
+pytest>=8.3.0
+httpx>=0.27.0                   # Cliente HTTP assíncrono usado nos testes de rota do FastAPI
