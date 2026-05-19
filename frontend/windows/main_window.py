@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.windows.dashboard import DashboardPage
+from frontend.windows.transactions import TransactionsPage
+from frontend.windows.investments import InvestmentsPage
 
 # Caminho do tema QSS relativo a este arquivo
 _THEME_PATH = Path(__file__).parent.parent / "styles" / "theme.qss"
@@ -200,19 +202,20 @@ class MainWindow(QMainWindow):
         """
         stack = QStackedWidget()
 
-        # 0 — Dashboard (implementado)
+        # 0 — Dashboard
         self._dashboard_page = DashboardPage()
         stack.addWidget(self._dashboard_page)
 
-        # 1..5 — Páginas ainda não implementadas
-        pending_labels = [
-            "Lançamentos",
-            "Investimentos",
-            "Mercado",
-            "Relatórios",
-            "Configurações",
-        ]
-        for name in pending_labels:
+        # 1 — Lançamentos
+        self._transactions_page = TransactionsPage()
+        stack.addWidget(self._transactions_page)
+
+        # 2 — Investimentos
+        self._investments_page = InvestmentsPage()
+        stack.addWidget(self._investments_page)
+
+        # 3..5 — Páginas ainda não implementadas
+        for name in ["Mercado", "Relatórios", "Configurações"]:
             placeholder = QLabel(f"{name}\n\nem desenvolvimento…")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder.setStyleSheet("color: #8B90A7; font-size: 18px;")

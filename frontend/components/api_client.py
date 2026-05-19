@@ -177,6 +177,54 @@ class ApiClient:
         """Lista todos os ativos cadastrados."""
         return self._get("/assets")
 
+    def _post(self, path: str, data: dict[str, Any]) -> Any:
+        """Executa POST com body JSON e retorna o JSON da resposta."""
+        url = f"{self.base_url}{path}"
+        try:
+            with httpx.Client(timeout=self._DEFAULT_TIMEOUT) as client:
+                response = client.post(url, json=data)
+                response.raise_for_status()
+                return response.json()
+        except httpx.ConnectError:
+            raise ApiError(
+                "Não foi possível conectar à API. "
+                "Verifique se o servidor FinanceHub está em execução."
+            )
+        except httpx.TimeoutException:
+            raise ApiError("A API demorou demais para responder. Tente novamente.")
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", str(exc))
+            except Exception:
+                detail = str(exc)
+            raise ApiError(detail, status_code=exc.response.status_code)
+        except httpx.RequestError as exc:
+            raise ApiError(f"Erro de rede: {exc}")
+
+    # ------------------------------------------------------------------
+    # Transações — escrita
+    # ------------------------------------------------------------------
+
+    def create_transaction(self, payload: dict[str, Any]) -> dict:
+        """Registra um novo lançamento. payload deve seguir TransactionCreate."""
+        return self._post("/transactions", payload)
+
+    # ------------------------------------------------------------------
+    # Ativos — escrita
+    # ------------------------------------------------------------------
+
+    def create_asset(self, payload: dict[str, Any]) -> dict:
+        """Cadastra um novo ativo (ação, FII, CDB, Tesouro etc.)."""
+        return self._post("/assets", payload)
+
+    def create_asset_operation(self, asset_id: int, payload: dict[str, Any]) -> dict:
+        """Registra compra, venda ou evento corporativo para o ativo."""
+        return self._post(f"/assets/{asset_id}/operations", payload)
+
+    def get_asset_position(self, asset_id: int) -> dict:
+        """Retorna posição consolidada de um ativo: quantidade líquida e preço médio."""
+        return self._get(f"/assets/{asset_id}/position")
+
     # ------------------------------------------------------------------
     # Sistema
     # ------------------------------------------------------------------
