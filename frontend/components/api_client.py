@@ -177,6 +177,47 @@ class ApiClient:
         """Lista todos os ativos cadastrados."""
         return self._get("/assets")
 
+    def _delete(self, path: str) -> None:
+        """Executa DELETE e ignora o corpo da resposta (esperado 204)."""
+        url = f"{self.base_url}{path}"
+        try:
+            with httpx.Client(timeout=self._DEFAULT_TIMEOUT) as client:
+                response = client.delete(url)
+                response.raise_for_status()
+        except httpx.ConnectError:
+            raise ApiError("Não foi possível conectar à API.")
+        except httpx.TimeoutException:
+            raise ApiError("A API demorou demais para responder.")
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", str(exc))
+            except Exception:
+                detail = str(exc)
+            raise ApiError(detail, status_code=exc.response.status_code)
+        except httpx.RequestError as exc:
+            raise ApiError(f"Erro de rede: {exc}")
+
+    def _patch(self, path: str, data: dict[str, Any]) -> Any:
+        """Executa PATCH com body JSON e retorna o JSON da resposta."""
+        url = f"{self.base_url}{path}"
+        try:
+            with httpx.Client(timeout=self._DEFAULT_TIMEOUT) as client:
+                response = client.patch(url, json=data)
+                response.raise_for_status()
+                return response.json()
+        except httpx.ConnectError:
+            raise ApiError("Não foi possível conectar à API.")
+        except httpx.TimeoutException:
+            raise ApiError("A API demorou demais para responder.")
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", str(exc))
+            except Exception:
+                detail = str(exc)
+            raise ApiError(detail, status_code=exc.response.status_code)
+        except httpx.RequestError as exc:
+            raise ApiError(f"Erro de rede: {exc}")
+
     def _post(self, path: str, data: dict[str, Any]) -> Any:
         """Executa POST com body JSON e retorna o JSON da resposta."""
         url = f"{self.base_url}{path}"
@@ -224,6 +265,66 @@ class ApiClient:
     def get_asset_position(self, asset_id: int) -> dict:
         """Retorna posição consolidada de um ativo: quantidade líquida e preço médio."""
         return self._get(f"/assets/{asset_id}/position")
+
+    # ------------------------------------------------------------------
+    # Contas — escrita
+    # ------------------------------------------------------------------
+
+    def create_account(self, payload: dict[str, Any]) -> dict:
+        """Cria uma nova conta bancária ou carteira digital."""
+        return self._post("/accounts", payload)
+
+    def delete_account(self, account_id: int) -> None:
+        """Remove uma conta permanentemente."""
+        self._delete(f"/accounts/{account_id}")
+
+    # ------------------------------------------------------------------
+    # Cartões de crédito
+    # ------------------------------------------------------------------
+
+    def get_cards(self) -> list[dict]:
+        """Lista todos os cartões de crédito."""
+        return self._get("/cards")
+
+    def get_card(self, card_id: int) -> dict:
+        """Retorna um cartão pelo ID."""
+        return self._get(f"/cards/{card_id}")
+
+    def create_card(self, payload: dict[str, Any]) -> dict:
+        """Cria um novo cartão de crédito."""
+        return self._post("/cards", payload)
+
+    def delete_card(self, card_id: int) -> None:
+        """Remove um cartão e suas faturas permanentemente."""
+        self._delete(f"/cards/{card_id}")
+
+    def get_card_invoices(self, card_id: int) -> list[dict]:
+        """Lista todas as faturas de um cartão."""
+        return self._get(f"/cards/{card_id}/invoices")
+
+    def update_invoice_status(self, card_id: int, invoice_id: int, status: str) -> dict:
+        """Atualiza o status de uma fatura (aberta → fechada → paga)."""
+        return self._patch(f"/cards/{card_id}/invoices/{invoice_id}/status", {"status": status})
+
+    # ------------------------------------------------------------------
+    # Dados de mercado
+    # ------------------------------------------------------------------
+
+    def get_market_quote(self, ticker: str) -> dict:
+        """Retorna a cotação atual de um ativo."""
+        return self._get(f"/market/quote/{ticker}")
+
+    def get_market_history(
+        self,
+        ticker: str,
+        period: str = "6m",
+        interval: str = "1d",
+    ) -> dict:
+        """Retorna o histórico de preços de fechamento de um ativo."""
+        return self._get(
+            f"/market/history/{ticker}",
+            params={"period": period, "interval": interval},
+        )
 
     # ------------------------------------------------------------------
     # Sistema

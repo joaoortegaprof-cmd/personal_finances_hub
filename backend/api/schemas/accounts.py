@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.models.account import AccountType
+from backend.models.account import AccountType, InvoiceStatus
 
 
 class AccountCreate(BaseModel):
@@ -68,5 +68,40 @@ class CreditCardOut(BaseModel):
     closing_day: int
     due_day: int
     payment_account_id: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreditCardUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=100)
+    bank_name: str | None = Field(default=None, max_length=100)
+    credit_limit: Decimal | None = Field(default=None, gt=0)
+    closing_day: int | None = Field(default=None, ge=1, le=28)
+    due_day: int | None = Field(default=None, ge=1, le=28)
+    payment_account_id: int | None = None
+
+
+class CreditCardInvoiceCreate(BaseModel):
+    month: int = Field(ge=1, le=12)
+    year: int = Field(ge=2000)
+    closing_date: date
+    due_date: date
+
+
+class InvoiceStatusUpdate(BaseModel):
+    status: InvoiceStatus
+
+
+class CreditCardInvoiceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    credit_card_id: int
+    month: int
+    year: int
+    closing_date: date
+    due_date: date
+    total_amount: Decimal
+    status: InvoiceStatus
     created_at: datetime
     updated_at: datetime

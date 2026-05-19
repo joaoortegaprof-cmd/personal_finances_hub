@@ -141,3 +141,92 @@ class AccountRepository(BaseRepository[Account]):
             .limit(1)
         )
         return result.scalars().first()
+
+    # -----------------------------------------------------------------
+    # CRUD global de cartões
+    # -----------------------------------------------------------------
+
+    async def get_all_cards(self) -> list[CreditCard]:
+        """Lista todos os cartões de todos as contas, ordenados por nome."""
+        result = await self._session.execute(
+            select(CreditCard).order_by(CreditCard.name)
+        )
+        return list(result.scalars().all())
+
+    async def get_card_by_id(self, card_id: int) -> CreditCard | None:
+        """Retorna um cartão pelo ID."""
+        return await self._session.get(CreditCard, card_id)
+
+    async def create_card(self, card: CreditCard) -> CreditCard:
+        """Persiste um novo cartão e retorna com ID gerado."""
+        self._session.add(card)
+        await self._session.flush()
+        await self._session.refresh(card)
+        return card
+
+    async def update_card(self, card_id: int, data: dict) -> CreditCard | None:
+        """Atualiza campos informados de um cartão existente."""
+        card = await self.get_card_by_id(card_id)
+        if card is None:
+            return None
+        for field, value in data.items():
+            if hasattr(card, field):
+                setattr(card, field, value)
+        await self._session.flush()
+        await self._session.refresh(card)
+        return card
+
+    async def delete_card(self, card_id: int) -> bool:
+        """Remove um cartão permanentemente (faturas são cascateadas)."""
+        card = await self.get_card_by_id(card_id)
+        if card is None:
+            return False
+        await self._session.delete(card)
+        await self._session.flush()
+        return True
+
+    async def card_exists(self, card_id: int) -> bool:
+        """Verifica se um cartão com o ID dado existe."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(CreditCard)
+            .where(CreditCard.id == card_id)
+            .limit(1)
+        )
+        return (result.scalar_one() or 0) > 0
+
+    # -----------------------------------------------------------------
+    # Faturas de cartão
+    # -----------------------------------------------------------------
+
+    async def get_card_invoices(self, card_id: int) -> list[CreditCardInvoice]:
+        """Lista todas as faturas de um cartão em ordem decrescente."""
+        result = await self._session.execute(
+            select(CreditCardInvoice)
+            .where(CreditCardInvoice.credit_card_id == card_id)
+            .order_by(CreditCardInvoice.year.desc(), CreditCardInvoice.month.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_invoice_by_id(self, invoice_id: int) -> CreditCardInvoice | None:
+        """Retorna uma fatura pelo ID."""
+        return await self._session.get(CreditCardInvoice, invoice_id)
+
+    async def create_invoice(self, invoice: CreditCardInvoice) -> CreditCardInvoice:
+        """Persiste uma nova fatura."""
+        self._session.add(invoice)
+        await self._session.flush()
+        await self._session.refresh(invoice)
+        return invoice
+
+    async def update_invoice(self, invoice_id: int, data: dict) -> CreditCardInvoice | None:
+        """Atualiza campos de uma fatura (status, total_amount etc.)."""
+        invoice = await self.get_invoice_by_id(invoice_id)
+        if invoice is None:
+            return None
+        for field, value in data.items():
+            if hasattr(invoice, field):
+                setattr(invoice, field, value)
+        await self._session.flush()
+        await self._session.refresh(invoice)
+        return invoice

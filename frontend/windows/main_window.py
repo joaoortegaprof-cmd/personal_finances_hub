@@ -32,21 +32,28 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from frontend.windows.accounts import AccountsPage
+from frontend.windows.cards import CardsPage
 from frontend.windows.dashboard import DashboardPage
-from frontend.windows.transactions import TransactionsPage
 from frontend.windows.investments import InvestmentsPage
+from frontend.windows.market import MarketPage
+from frontend.windows.reports import ReportsPage
+from frontend.windows.settings_page import SettingsPage
+from frontend.windows.transactions import TransactionsPage
 
 # Caminho do tema QSS relativo a este arquivo
 _THEME_PATH = Path(__file__).parent.parent / "styles" / "theme.qss"
 
 # Itens da sidebar: (label exibido, índice no QStackedWidget)
 _NAV_ITEMS: list[tuple[str, int]] = [
-    ("Dashboard", 0),
-    ("Lançamentos", 1),
-    ("Investimentos", 2),
-    ("Mercado", 3),
-    ("Relatórios", 4),
-    ("Configurações", 5),
+    ("Dashboard",    0),
+    ("Lançamentos",  1),
+    ("Contas",       2),
+    ("Cartões",      3),
+    ("Investimentos",4),
+    ("Mercado",      5),
+    ("Relatórios",   6),
+    ("Configurações",7),
 ]
 
 
@@ -210,16 +217,29 @@ class MainWindow(QMainWindow):
         self._transactions_page = TransactionsPage()
         stack.addWidget(self._transactions_page)
 
-        # 2 — Investimentos
+        # 2 — Contas
+        self._accounts_page = AccountsPage()
+        stack.addWidget(self._accounts_page)
+
+        # 3 — Cartões e Faturas
+        self._cards_page = CardsPage()
+        stack.addWidget(self._cards_page)
+
+        # 4 — Investimentos
         self._investments_page = InvestmentsPage()
         stack.addWidget(self._investments_page)
 
-        # 3..5 — Páginas ainda não implementadas
-        for name in ["Mercado", "Relatórios", "Configurações"]:
-            placeholder = QLabel(f"{name}\n\nem desenvolvimento…")
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            placeholder.setStyleSheet("color: #8B90A7; font-size: 18px;")
-            stack.addWidget(placeholder)
+        # 5 — Mercado
+        self._market_page = MarketPage()
+        stack.addWidget(self._market_page)
+
+        # 6 — Relatórios
+        self._reports_page = ReportsPage()
+        stack.addWidget(self._reports_page)
+
+        # 7 — Configurações e Metas
+        self._settings_page = SettingsPage()
+        stack.addWidget(self._settings_page)
 
         return stack
 

@@ -22,7 +22,9 @@ from fastapi.responses import JSONResponse
 
 from backend.api.routes.accounts import router as accounts_router
 from backend.api.routes.assets import assets_router, portfolio_router
+from backend.api.routes.cards import router as cards_router
 from backend.api.routes.dashboard import router as dashboard_router
+from backend.api.routes.market import router as market_router
 from backend.api.routes.transactions import router as transactions_router
 from backend.core.config import settings
 from backend.core.database import init_db
@@ -78,10 +80,12 @@ app.add_middleware(
 # -----------------------------------------------------------------
 
 app.include_router(accounts_router)
+app.include_router(cards_router)
 app.include_router(transactions_router)
 app.include_router(assets_router)
 app.include_router(portfolio_router)
 app.include_router(dashboard_router)
+app.include_router(market_router)
 
 
 # -----------------------------------------------------------------

@@ -8,3 +8,4 @@
 2026-05-19 18:49:48 | INFO     | __main__:115 | Aguardando API ficar disponível em http://127.0.0.1:8765/health…
 2026-05-19 18:49:49 | INFO     | __main__:125 | API pronta.
 2026-05-19 18:49:49 | INFO     | __main__:147 | Interface aberta. Aguardando o usuário.
+2026-05-19 18:56:41 | INFO     | __main__:149 | Aplicação encerrada (código 0).
