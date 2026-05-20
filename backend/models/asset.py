@@ -229,9 +229,11 @@ class Asset(Base):
     # -----------------------------------------------------------------
 
     __table_args__ = (
-        # Renda fixa e Tesouro devem ter indexador informado
+        # Renda fixa e Tesouro devem ter indexador informado.
+        # Usa os nomes dos membros do enum (ex: 'FIXED_INCOME', 'TREASURY')
+        # porque o SQLAlchemy armazena o .name do enum, não o .value.
         CheckConstraint(
-            "NOT (asset_type IN ('renda_fixa', 'tesouro_direto') AND indexer IS NULL)",
+            "NOT (asset_type IN ('FIXED_INCOME', 'TREASURY') AND indexer IS NULL)",
             name="ck_asset_fixed_income_requires_indexer",
         ),
         # Código de moeda deve ter exatamente 3 caracteres

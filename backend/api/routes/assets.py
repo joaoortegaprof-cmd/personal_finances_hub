@@ -9,6 +9,7 @@ Dois routers separados para prefixos distintos:
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas.assets import (
@@ -48,7 +49,14 @@ async def create_asset(payload: AssetCreate, db: AsyncSession = Depends(get_db))
     """Cadastra um novo ativo (ação, FII, CDB, Tesouro etc.)."""
     repo = AssetRepository(db)
     asset = Asset(**payload.model_dump())
-    return await repo.create(asset)
+    try:
+        return await repo.create(asset)
+    except IntegrityError:
+        ticker_info = f" '{payload.ticker}'" if payload.ticker else ""
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ticker{ticker_info} já está cadastrado. Verifique se o ativo não foi adicionado anteriormente.",
+        )
 
 
 @assets_router.get("/{asset_id}/position", response_model=ConsolidatedPositionOut)

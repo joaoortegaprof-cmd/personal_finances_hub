@@ -1,0 +1,8 @@
+{
+  "savings_rate_goal_pct": 15.0,
+  "monthly_income_estimate": 0.0,
+  "emergency_fund_months": 6,
+  "invoice_alert_days": 3,
+  "maturity_alert_days": 30,
+  "savings_alert_pct": 15.0
+}

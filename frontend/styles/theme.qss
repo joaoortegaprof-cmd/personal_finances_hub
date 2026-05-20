@@ -18,9 +18,14 @@ QWidget {
     background-color: #0F1117;
     color: #E8EAED;
     font-family: "Inter", "Segoe UI", "Roboto", sans-serif;
-    font-size: 14px;
+    font-size: 11pt;
     border: none;
     outline: none;
+}
+
+/* QLabel herda background de QWidget — forçar transparente globalmente */
+QLabel {
+    background-color: transparent;
 }
 
 /* ---- Sidebar ----------------------------------------------- */
@@ -45,25 +50,26 @@ QLabel#logoLabel {
 /* Botões de navegação da sidebar */
 QPushButton#navButton {
     background-color: transparent;
-    color: #8B90A7;
+    color: #C8CAD8;
     text-align: left;
     padding: 12px 20px;
     margin: 2px 8px;
     border-radius: 8px;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
+    border: none;
 }
 
 QPushButton#navButton:hover {
-    background-color: #242736;
-    color: #E8EAED;
+    background-color: #1E2235;
+    color: #FFFFFF;
 }
 
 /* Estado ativo: página atual selecionada */
 QPushButton#navButton:checked {
     background-color: #242736;
-    color: #4A9EFF;
-    border-left: 3px solid #4A9EFF;
+    color: #00C896;
+    border-left: 3px solid #00C896;
     padding-left: 17px; /* compensa a borda de 3px */
 }
 
@@ -83,11 +89,18 @@ QLabel#headerTitle {
     font-weight: 600;
 }
 
+/* ---- Títulos de página ------------------------------------ */
+QLabel#page-title {
+    color: #FFFFFF;
+    font-size: 22px;
+    font-weight: 700;
+}
+
 /* ---- Cards de resumo -------------------------------------- */
 QFrame#summaryCard {
     background-color: #1A1D27;
     border: 1px solid #2E3250;
-    border-radius: 12px;
+    border-radius: 14px;
 }
 
 QFrame#summaryCard:hover {
@@ -103,14 +116,14 @@ QLabel#cardTitle {
 }
 
 QLabel#cardValue {
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 700;
 }
 
 /* ---- Seções e títulos ------------------------------------- */
 QLabel#sectionTitle {
-    color: #E8EAED;
-    font-size: 16px;
+    color: #C8CAD8;
+    font-size: 13px;
     font-weight: 600;
 }
 
@@ -186,6 +199,8 @@ QTableWidget::item,
 QTableView::item {
     padding: 8px 12px;
     border: none;
+    font-size: 11px;
+    color: #E0E2EA;
 }
 
 QTableWidget::item:selected,
@@ -196,9 +211,9 @@ QTableView::item:selected {
 
 QHeaderView::section {
     background-color: #242736;
-    color: #8B90A7;
-    font-size: 12px;
-    font-weight: 600;
+    color: #C8CAD8;
+    font-size: 10px;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.8px;
     padding: 10px 12px;
@@ -274,21 +289,20 @@ QComboBox QAbstractItemView {
     padding: 4px;
 }
 
-/* ---- Botões de ação --------------------------------------- */
+/* ---- Botões de ação (secundário — padrão base) ------------ */
 QPushButton {
-    background-color: #242736;
-    color: #E8EAED;
-    border: 1px solid #2E3250;
+    background-color: transparent;
+    color: #C8CAD8;
+    border: 2px solid #3D4166;
     border-radius: 8px;
     padding: 10px 20px;
-    font-size: 14px;
+    font-size: 11px;
     font-weight: 500;
 }
 
 QPushButton:hover {
-    background-color: #2E3250;
-    border-color: #4A9EFF;
-    color: #4A9EFF;
+    background-color: #242736;
+    color: #FFFFFF;
 }
 
 QPushButton:pressed {
@@ -301,40 +315,60 @@ QPushButton:disabled {
     border-color: #1E2133;
 }
 
-/* Botão primário — ação principal */
+/* Botão primário — ação principal (adicionar, salvar, confirmar) */
 QPushButton[class="primary"] {
-    background-color: #4A9EFF;
-    color: #0F1117;
-    border: none;
-    font-weight: 600;
+    background-color: #00C896;
+    color: #0A0D14;
+    border: 2px solid #00A87E;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-size: 11px;
+    font-weight: 700;
 }
 
 QPushButton[class="primary"]:hover {
-    background-color: #6AB0FF;
+    background-color: #00E5AC;
+    border-color: #00C896;
+}
+
+QPushButton[class="primary"]:pressed {
+    background-color: #009E78;
 }
 
 /* Botão de sucesso — confirmar / salvar */
 QPushButton[class="success"] {
     background-color: #00C896;
-    color: #0F1117;
-    border: none;
-    font-weight: 600;
+    color: #0A0D14;
+    border: 2px solid #00A87E;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-size: 11px;
+    font-weight: 700;
 }
 
 QPushButton[class="success"]:hover {
-    background-color: #00DFA8;
+    background-color: #00E5AC;
+    border-color: #00C896;
+}
+
+QPushButton[class="success"]:pressed {
+    background-color: #009E78;
 }
 
 /* Botão de perigo — excluir */
 QPushButton[class="danger"] {
-    background-color: #FF6B6B;
-    color: #0F1117;
-    border: none;
+    background-color: #FF4D4D;
+    color: #FFFFFF;
+    border: 2px solid #CC3D3D;
     font-weight: 600;
 }
 
 QPushButton[class="danger"]:hover {
-    background-color: #FF8585;
+    background-color: #FF6B6B;
+}
+
+QPushButton[class="danger"]:pressed {
+    background-color: #CC3D3D;
 }
 
 /* ---- Scrollbars ------------------------------------------- */
