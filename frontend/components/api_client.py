@@ -363,6 +363,10 @@ class ApiClient:
             params={"period": period, "interval": interval},
         )
 
+    def get_market_fundamentals(self, ticker: str) -> dict:
+        """Retorna indicadores fundamentalistas de um ativo (P/L, P/VP, DY, ROE, etc.)."""
+        return self._get(f"/market/fundamentals/{ticker}")
+
     # ------------------------------------------------------------------
     # Sistema
     # ------------------------------------------------------------------

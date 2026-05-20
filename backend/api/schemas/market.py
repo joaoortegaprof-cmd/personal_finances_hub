@@ -1,5 +1,5 @@
 """
-Schemas Pydantic para dados de mercado (cotações e histórico).
+Schemas Pydantic para dados de mercado (cotações, histórico e fundamentalistas).
 """
 
 from datetime import date, datetime
@@ -27,3 +27,14 @@ class PriceHistoryOut(BaseModel):
     currency: str
     interval: str
     points: list[PricePointOut]
+
+
+class FundamentalsOut(BaseModel):
+    ticker: str
+    pe_ratio: Decimal | None        # P/L — Preço / Lucro
+    pb_ratio: Decimal | None        # P/VP — Preço / Valor Patrimonial
+    dividend_yield: Decimal | None  # DY % (já multiplicado por 100)
+    roe: Decimal | None             # ROE % (já multiplicado por 100)
+    net_margin: Decimal | None      # Margem Líquida % (já multiplicado por 100)
+    ev_ebitda: Decimal | None       # EV/EBITDA
+    fetched_at: datetime

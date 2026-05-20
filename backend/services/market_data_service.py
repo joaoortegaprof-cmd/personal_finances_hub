@@ -27,6 +27,7 @@ Nota sobre async:
   para não bloquear o event loop do FastAPI.
 """
 
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -226,6 +227,50 @@ class MarketDataService:
         history = PriceHistory(ticker=ticker, dates=dates, prices=prices, currency=currency)
         self._save_to_cache(cache_key, history)
         return history
+
+    # -----------------------------------------------------------------
+    # Indicadores fundamentalistas
+    # -----------------------------------------------------------------
+
+    async def get_fundamentals(self, ticker: str) -> dict:
+        """
+        Busca indicadores fundamentalistas via yfinance Ticker.info.
+
+        Retorna dict com:
+          pe_ratio, pb_ratio, dividend_yield, roe, net_margin, ev_ebitda, fetched_at.
+
+        DY, ROE e Margem Líquida são retornados em % (multiplicados por 100).
+        Campos indisponíveis para o ativo ficam como None.
+        """
+        cache_key = f"fundamentals:{ticker}"
+        cached = self._get_from_cache(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+        def _to_decimal(val: object, scale: float = 1.0) -> Decimal | None:
+            if val is None:
+                return None
+            try:
+                f = float(val) * scale
+                if math.isnan(f) or math.isinf(f):
+                    return None
+                return Decimal(str(f)).quantize(Decimal("0.01"))
+            except (TypeError, ValueError):
+                return None
+
+        info: dict = yf.Ticker(ticker).info
+
+        result: dict = {
+            "pe_ratio":       _to_decimal(info.get("trailingPE")),
+            "pb_ratio":       _to_decimal(info.get("priceToBook")),
+            "dividend_yield": _to_decimal(info.get("dividendYield"), scale=100.0),
+            "roe":            _to_decimal(info.get("returnOnEquity"), scale=100.0),
+            "net_margin":     _to_decimal(info.get("profitMargins"), scale=100.0),
+            "ev_ebitda":      _to_decimal(info.get("enterpriseToEbitda")),
+            "fetched_at":     datetime.now(),
+        }
+        self._save_to_cache(cache_key, result)
+        return result
 
     # -----------------------------------------------------------------
     # Comparação com benchmark

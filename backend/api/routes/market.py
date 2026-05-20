@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from backend.api.schemas.market import PriceHistoryOut, PricePointOut, QuoteOut
+from backend.api.schemas.market import FundamentalsOut, PriceHistoryOut, PricePointOut, QuoteOut
 from backend.services.market_data_service import MarketDataService
 
 router = APIRouter(prefix="/market", tags=["Mercado"])
@@ -99,4 +99,33 @@ async def get_history(
         currency=history.currency,
         interval=interval,
         points=points,
+    )
+
+
+@router.get("/fundamentals/{ticker}", response_model=FundamentalsOut)
+async def get_fundamentals(ticker: str):
+    """
+    Retorna indicadores fundamentalistas de um ativo via yfinance.
+
+    Indicadores retornados: P/L, P/VP, Dividend Yield, ROE, Margem Líquida, EV/EBITDA.
+    DY, ROE e Margem Líquida já vêm em % (multiplicados por 100).
+    Campos não disponíveis para o ativo retornam null.
+    """
+    yf_ticker = _market_service.to_yfinance_ticker(ticker.upper())
+    try:
+        data = await _market_service.get_fundamentals(yf_ticker)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Não foi possível obter fundamentalistas para '{ticker}': {exc}",
+        )
+    return FundamentalsOut(
+        ticker=ticker.upper(),
+        pe_ratio=data.get("pe_ratio"),
+        pb_ratio=data.get("pb_ratio"),
+        dividend_yield=data.get("dividend_yield"),
+        roe=data.get("roe"),
+        net_margin=data.get("net_margin"),
+        ev_ebitda=data.get("ev_ebitda"),
+        fetched_at=data["fetched_at"],
     )
