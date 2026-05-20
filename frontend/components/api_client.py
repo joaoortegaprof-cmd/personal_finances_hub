@@ -218,6 +218,27 @@ class ApiClient:
         except httpx.RequestError as exc:
             raise ApiError(f"Erro de rede: {exc}")
 
+    def _put(self, path: str, data: dict[str, Any]) -> Any:
+        """Executa PUT com body JSON e retorna o JSON da resposta."""
+        url = f"{self.base_url}{path}"
+        try:
+            with httpx.Client(timeout=self._DEFAULT_TIMEOUT) as client:
+                response = client.put(url, json=data)
+                response.raise_for_status()
+                return response.json()
+        except httpx.ConnectError:
+            raise ApiError("Não foi possível conectar à API.")
+        except httpx.TimeoutException:
+            raise ApiError("A API demorou demais para responder.")
+        except httpx.HTTPStatusError as exc:
+            try:
+                detail = exc.response.json().get("detail", str(exc))
+            except Exception:
+                detail = str(exc)
+            raise ApiError(detail, status_code=exc.response.status_code)
+        except httpx.RequestError as exc:
+            raise ApiError(f"Erro de rede: {exc}")
+
     def _post(self, path: str, data: dict[str, Any]) -> Any:
         """Executa POST com body JSON e retorna o JSON da resposta."""
         url = f"{self.base_url}{path}"
@@ -250,6 +271,10 @@ class ApiClient:
         """Registra um novo lançamento. payload deve seguir TransactionCreate."""
         return self._post("/transactions", payload)
 
+    def update_transaction(self, transaction_id: int, payload: dict[str, Any]) -> dict:
+        """Atualiza um lançamento existente."""
+        return self._put(f"/transactions/{transaction_id}", payload)
+
     # ------------------------------------------------------------------
     # Ativos — escrita
     # ------------------------------------------------------------------
@@ -257,6 +282,10 @@ class ApiClient:
     def create_asset(self, payload: dict[str, Any]) -> dict:
         """Cadastra um novo ativo (ação, FII, CDB, Tesouro etc.)."""
         return self._post("/assets", payload)
+
+    def update_asset(self, asset_id: int, payload: dict[str, Any]) -> dict:
+        """Atualiza um ativo existente."""
+        return self._put(f"/assets/{asset_id}", payload)
 
     def create_asset_operation(self, asset_id: int, payload: dict[str, Any]) -> dict:
         """Registra compra, venda ou evento corporativo para o ativo."""
@@ -273,6 +302,10 @@ class ApiClient:
     def create_account(self, payload: dict[str, Any]) -> dict:
         """Cria uma nova conta bancária ou carteira digital."""
         return self._post("/accounts", payload)
+
+    def update_account(self, account_id: int, payload: dict[str, Any]) -> dict:
+        """Atualiza uma conta existente."""
+        return self._put(f"/accounts/{account_id}", payload)
 
     def delete_account(self, account_id: int) -> None:
         """Remove uma conta permanentemente."""
@@ -293,6 +326,10 @@ class ApiClient:
     def create_card(self, payload: dict[str, Any]) -> dict:
         """Cria um novo cartão de crédito."""
         return self._post("/cards", payload)
+
+    def update_card(self, card_id: int, payload: dict[str, Any]) -> dict:
+        """Atualiza um cartão existente."""
+        return self._put(f"/cards/{card_id}", payload)
 
     def delete_card(self, card_id: int) -> None:
         """Remove um cartão e suas faturas permanentemente."""

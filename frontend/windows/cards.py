@@ -120,6 +120,28 @@ class SaveCardWorker(QThread):
             self.error_occurred.emit(f"Erro inesperado: {exc}")
 
 
+class UpdateCardWorker(QThread):
+    """Executa PUT /cards/{id} em background."""
+
+    updated = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, card_id: int, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self._client = client
+        self._card_id = card_id
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client.update_card(self._card_id, self._payload)
+            self.updated.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
 class DeleteCardWorker(QThread):
     """Executa DELETE /cards/{id} em background."""
 
@@ -307,6 +329,39 @@ class CardDialog(QDialog):
 
 
 # ======================================================================
+# Diálogo de edição de cartão
+# ======================================================================
+
+
+class EditCardDialog(CardDialog):
+    """Formulário modal para editar um cartão existente (pré-preenchido)."""
+
+    def __init__(self, card: dict[str, Any], accounts: list[dict], parent: QWidget | None = None) -> None:
+        super().__init__(accounts, parent)
+        self.setWindowTitle("Editar Cartão de Crédito")
+        self._card_id = card["id"]
+        self._prefill(card)
+
+    def _prefill(self, card: dict[str, Any]) -> None:
+        self._name.setText(card.get("name", ""))
+        self._bank.setText(card.get("bank_name", ""))
+        self._last4.setText(card.get("last_four_digits", ""))
+        try:
+            self._limit.setValue(float(card.get("credit_limit", 0)))
+        except (TypeError, ValueError):
+            pass
+        self._closing_day.setValue(card.get("closing_day", 10))
+        self._due_day.setValue(card.get("due_day", 17))
+
+        payment_acc = card.get("payment_account_id")
+        if payment_acc is not None:
+            for i in range(self._account_combo.count()):
+                if self._account_combo.itemData(i) == payment_acc:
+                    self._account_combo.setCurrentIndex(i)
+                    break
+
+
+# ======================================================================
 # Página principal de Cartões
 # ======================================================================
 
@@ -327,6 +382,7 @@ class CardsPage(QWidget):
         self._worker: CardsWorker | None = None
         self._inv_worker: InvoicesWorker | None = None
         self._save_worker: SaveCardWorker | None = None
+        self._update_worker: UpdateCardWorker | None = None
         self._delete_worker: DeleteCardWorker | None = None
         self._pay_worker: PayInvoiceWorker | None = None
         self._cards: list[dict] = []
@@ -411,7 +467,7 @@ class CardsPage(QWidget):
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(_CC_NAME, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(_CC_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_CC_ACTIONS, 90)
+        table.setColumnWidth(_CC_ACTIONS, 170)
         return table
 
     def _build_invoices_table(self) -> QTableWidget:
@@ -476,12 +532,25 @@ class CardsPage(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._cards_table.setItem(row, col, item)
 
+            actions = QWidget()
+            actions_layout = QHBoxLayout(actions)
+            actions_layout.setContentsMargins(4, 2, 4, 2)
+            actions_layout.setSpacing(4)
+
+            edit_btn = QPushButton("✏️")
+            edit_btn.setToolTip("Editar cartão")
+            edit_btn.setFixedWidth(36)
+            edit_btn.clicked.connect(lambda _, c=card: self._open_edit_card_dialog(c))
+
             del_btn = QPushButton("Excluir")
             del_btn.setProperty("class", "danger")
             del_btn.style().unpolish(del_btn)
             del_btn.style().polish(del_btn)
             del_btn.clicked.connect(lambda _, c=card: self._confirm_delete_card(c))
-            self._cards_table.setCellWidget(row, _CC_ACTIONS, del_btn)
+
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(del_btn)
+            self._cards_table.setCellWidget(row, _CC_ACTIONS, actions)
 
     # ------------------------------------------------------------------
     # Dados — Faturas
@@ -593,6 +662,20 @@ class CardsPage(QWidget):
             lambda msg: QMessageBox.critical(self, "Erro ao salvar", msg)
         )
         self._save_worker.start()
+
+    def _open_edit_card_dialog(self, card: dict) -> None:
+        dialog = EditCardDialog(card, self._accounts, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_payload()
+        if self._update_worker and self._update_worker.isRunning():
+            return
+        self._update_worker = UpdateCardWorker(self._client, card["id"], payload)
+        self._update_worker.updated.connect(lambda _: self.load_data())
+        self._update_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
+        )
+        self._update_worker.start()
 
     def _confirm_delete_card(self, card: dict) -> None:
         name = card.get("name", "este cartão")

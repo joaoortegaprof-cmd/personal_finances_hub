@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -73,8 +74,8 @@ class InvestmentsWorker(QThread):
       4. GET /portfolio/liquidity → breakdown de liquidez
     """
 
-    # (positions_list, portfolio_summary, liquidity_breakdown)
-    data_ready = pyqtSignal(list, dict, dict)
+    # (assets_list, positions_list, portfolio_summary, liquidity_breakdown)
+    data_ready = pyqtSignal(list, list, dict, dict)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, client: ApiClient) -> None:
@@ -105,7 +106,29 @@ class InvestmentsWorker(QThread):
                         "estimated_cost": "0",
                     })
 
-            self.data_ready.emit(positions, portfolio, liquidity)
+            self.data_ready.emit(assets, positions, portfolio, liquidity)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class UpdateAssetWorker(QThread):
+    """Executa PUT /assets/{id} em background."""
+
+    updated = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, asset_id: int, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self._client = client
+        self._asset_id = asset_id
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client.update_asset(self._asset_id, self._payload)
+            self.updated.emit(result)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
@@ -153,6 +176,67 @@ class SaveOperationWorker(QThread):
             self.error_occurred.emit(str(exc))
         except Exception as exc:
             self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+# ======================================================================
+# Lista estática de tickers B3 (top 100 ações + top 50 FIIs + ETFs)
+# ======================================================================
+
+_B3_STOCKS = [
+    "ABEV3","ALOS3","ALPA4","ASAI3","AURE3","BBAS3","BBDC4","BEEF3","BHIA3","BPAC11",
+    "BRAP4","BRKM5","BRFS3","CBAV3","CCRO3","CEAB3","CMIG4","CMIN3","COGN3","CPLE6",
+    "CSAN3","CSNA3","CVCB3","CYRE3","DXCO3","ECOO11","EGIA3","EGIE3","ELET3","ELET6",
+    "EMBR3","EQTL3","EZTC3","FLRY3","GFSA3","GGBR4","GRND3","HAPV3","HYPE3","IFCM3",
+    "IGTI11","ITSA4","ITUB4","JBSS3","JHSF3","KLBN11","LAVV3","LEVE3","LREN3","LWSA3",
+    "MATD3","MDNE3","MDIA3","MGLU3","MILS3","MLAS3","MOVI3","MRFG3","MRVE3","MULT3",
+    "NATU3","NTCO3","PCAR3","PDGR3","PETZ3","POSI3","PRIO3","QUAL3","RADL3","RAIL3",
+    "RAIZ4","RANI3","RDOR3","RENT3","RLOG3","SAPR11","SANB11","SBSP3","SLCE3","SMLS3",
+    "SMTO3","SUZB3","TAEE11","TGMA3","TIMS3","TOTS3","UGPA3","VALE3","VBBR3","VIVT3",
+    "VVAR3","WEGE3","YDUQ3","PETR3","PETR4","PRNR3","BRSR6","CGAS3","CGAS5","ENBR3",
+]
+
+_B3_FIIS = [
+    "AFHI11","ALZR11","BCFF11","BPML11","BRCO11","BRCR11","BRIP11","BTCI11","BTLG11",
+    "CPFF11","CPTS11","DEVA11","FCFL11","FIIB11","GGRC11","HFOF11","HGBS11","HGCR11",
+    "HGLG11","HGPO11","HGRE11","HSML11","IFIE11","IRDM11","JSRE11","KNCR11","KNRI11",
+    "KNSC11","MANA11","MCCI11","MXRF11","PATC11","PVBI11","QAGR11","RBRF11","RBVA11",
+    "RBBV11","RBRR11","RECR11","RNGO11","SNFF11","TGAR11","TSNC11","TRXF11","VGHF11",
+    "VGIR11","VINO11","VISC11","VSLH11","XPLG11","XPML11",
+]
+
+_B3_ETFS = [
+    "BBSD11","BOVA11","BOVB11","DIVO11","ECOO11","FIXA11","FIND11","GOVE11","HASH11",
+    "IFRA11","IRFM11","ISUS11","IVVB11","LFTS11","MATB11","NTNB11","PIBB11","SMAL11",
+    "SPXI11","XFIX11",
+]
+
+# Tipos que usam dropdown com lista B3
+_TICKER_DROPDOWN_TYPES = {"acao", "fii", "etf"}
+
+
+class TickerNameWorker(QThread):
+    """Busca cotação de um ticker para obter o nome da empresa."""
+
+    name_found = pyqtSignal(str)
+    not_found = pyqtSignal()
+
+    def __init__(self, client: ApiClient, ticker: str) -> None:
+        super().__init__()
+        self._client = client
+        self._ticker = ticker
+
+    def run(self) -> None:
+        try:
+            quote = self._client.get_market_quote(self._ticker)
+            name = quote.get("name") or quote.get("long_name") or ""
+            if name:
+                self.name_found.emit(name)
+            else:
+                self.not_found.emit()
+        except ApiError:
+            self.not_found.emit()
+        except Exception:
+            self.not_found.emit()
 
 
 # ======================================================================
@@ -208,15 +292,16 @@ class NewAssetDialog(QDialog):
     """
     Formulário para cadastrar um novo ativo na carteira.
 
-    Campos obrigatórios: nome e tipo.
-    Ticker é opcional (ativos de renda fixa geralmente não têm).
-    Indexador e data de vencimento só fazem sentido para renda fixa/Tesouro.
+    Para STOCK/FII/ETF: ticker via QComboBox com QCompleter (lista B3 estática).
+    Para outros tipos: ticker via campo de texto livre.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Adicionar Ativo")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(480)
+        self._client = ApiClient()
+        self._name_worker: TickerNameWorker | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -232,50 +317,65 @@ class NewAssetDialog(QDialog):
         form.setSpacing(12)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # Ticker (ex: PETR4, MXRF11) — deixado em branco para CDB/LCI
-        self._ticker = QLineEdit()
-        self._ticker.setPlaceholderText("Ex: PETR4, MXRF11 (deixe em branco se não houver)")
-        self._ticker.setMaxLength(20)
-        form.addRow("Ticker", self._ticker)
+        # Tipo de ativo — controla qual widget de ticker mostrar
+        self._type_combo = QComboBox()
+        for label in _ASSET_TYPE_LABELS:
+            self._type_combo.addItem(label)
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
+        form.addRow("Tipo *", self._type_combo)
+
+        # Ticker: QComboBox editável com QCompleter para STOCK/FII/ETF
+        ticker_row = QHBoxLayout()
+        ticker_row.setSpacing(6)
+
+        self._ticker_combo = QComboBox()
+        self._ticker_combo.setEditable(True)
+        self._ticker_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._ticker_combo.setMinimumWidth(180)
+        self._ticker_combo.activated.connect(self._on_ticker_activated)
+        ticker_row.addWidget(self._ticker_combo, 1)
+
+        lookup_btn = QPushButton("↻")
+        lookup_btn.setToolTip("Buscar nome do ticker")
+        lookup_btn.setFixedWidth(36)
+        lookup_btn.clicked.connect(self._lookup_name)
+        ticker_row.addWidget(lookup_btn)
+
+        ticker_widget = QWidget()
+        ticker_widget.setLayout(ticker_row)
+        form.addRow("Ticker", ticker_widget)
 
         # Nome completo do ativo
         self._name = QLineEdit()
         self._name.setPlaceholderText("Ex: Petrobras PN, CDB Nubank 110% CDI")
         form.addRow("Nome *", self._name)
 
-        # Tipo de ativo
-        self._type_combo = QComboBox()
-        for label in _ASSET_TYPE_LABELS:
-            self._type_combo.addItem(label)
-        form.addRow("Tipo *", self._type_combo)
-
-        # Liquidez — define janela D+X para o breakdown de liquidez
+        # Liquidez
         self._liquidity_combo = QComboBox()
         for label in _LIQUIDITY_LABELS:
             self._liquidity_combo.addItem(label)
-        # Padrão D+2 (ações B3 — mais comum)
         self._liquidity_combo.setCurrentIndex(2)
         form.addRow("Liquidez", self._liquidity_combo)
 
-        # Indexador — relevante para renda fixa e Tesouro
+        # Indexador
         self._indexer_combo = QComboBox()
         for label in _INDEXER_LABELS:
             self._indexer_combo.addItem(label)
         form.addRow("Indexador", self._indexer_combo)
 
-        # Data de vencimento — relevante para CDB sem liquidez, Tesouro Prefixado
+        # Data de vencimento
         self._maturity = QDateEdit()
         self._maturity.setCalendarPopup(True)
-        self._maturity.setSpecialValueText("Sem vencimento")  # exibido quando valor é mínimo
+        self._maturity.setSpecialValueText("Sem vencimento")
         self._maturity.setDisplayFormat("dd/MM/yyyy")
         from PyQt6.QtCore import QDate
-        self._maturity.setDate(QDate(2099, 12, 31))  # data "sem vencimento" padrão
+        self._maturity.setDate(QDate(2099, 12, 31))
         self._has_maturity = QCheckBox("Definir data de vencimento")
         self._has_maturity.toggled.connect(self._maturity.setEnabled)
         self._maturity.setEnabled(False)
         form.addRow(self._has_maturity, self._maturity)
 
-        # Setor (opcional — usado na análise de diversificação futura)
+        # Setor
         self._sector = QLineEdit()
         self._sector.setPlaceholderText("Ex: Energia, Financeiro, Imóveis (opcional)")
         form.addRow("Setor", self._sector)
@@ -300,6 +400,57 @@ class NewAssetDialog(QDialog):
             save_btn.style().unpolish(save_btn)
             save_btn.style().polish(save_btn)
         layout.addWidget(buttons)
+
+        # Inicializa o combo de ticker para o tipo padrão
+        self._on_type_changed(self._type_combo.currentText())
+
+    def _on_type_changed(self, type_label: str) -> None:
+        api_type = _ASSET_TYPE_LABELS.get(type_label, "")
+        self._ticker_combo.blockSignals(True)
+        self._ticker_combo.clear()
+
+        if api_type in _TICKER_DROPDOWN_TYPES:
+            if api_type == "acao":
+                items = _B3_STOCKS
+            elif api_type == "fii":
+                items = _B3_FIIS
+            else:
+                items = _B3_ETFS
+            self._ticker_combo.addItems(items)
+            self._ticker_combo.setCurrentIndex(-1)
+            self._ticker_combo.lineEdit().setPlaceholderText("Selecione ou digite o ticker…")
+
+            completer = QCompleter(items, self._ticker_combo)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            self._ticker_combo.setCompleter(completer)
+        else:
+            self._ticker_combo.setCompleter(None)
+            self._ticker_combo.lineEdit().setPlaceholderText("Ex: BTC, TESOURO-IPCA-2035 (opcional)")
+
+        self._ticker_combo.blockSignals(False)
+
+    def _on_ticker_activated(self, index: int) -> None:
+        self._lookup_name()
+
+    def _lookup_name(self) -> None:
+        ticker = self._ticker_combo.currentText().strip().upper()
+        if not ticker:
+            return
+        if self._name_worker and self._name_worker.isRunning():
+            return
+        self._name.setPlaceholderText("Buscando nome…")
+        self._name_worker = TickerNameWorker(self._client, ticker)
+        self._name_worker.name_found.connect(self._on_name_found)
+        self._name_worker.not_found.connect(
+            lambda: self._name.setPlaceholderText("Nome não encontrado — informe manualmente")
+        )
+        self._name_worker.start()
+
+    def _on_name_found(self, name: str) -> None:
+        if not self._name.text().strip():
+            self._name.setText(name)
+        self._name.setPlaceholderText("Ex: Petrobras PN, CDB Nubank 110% CDI")
 
     def _on_accept(self) -> None:
         if not self._name.text().strip():
@@ -329,7 +480,7 @@ class NewAssetDialog(QDialog):
             "liquidity": liq_value,
         }
 
-        ticker = self._ticker.text().strip().upper()
+        ticker = self._ticker_combo.currentText().strip().upper()
         if ticker:
             payload["ticker"] = ticker
         if indexer_value:
@@ -466,6 +617,52 @@ class NewOperationDialog(QDialog):
         }
 
 
+class EditAssetDialog(NewAssetDialog):
+    """Formulário modal para editar um ativo existente (pré-preenchido)."""
+
+    def __init__(self, asset: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Editar Ativo")
+        self._asset_id = asset["id"]
+        self._prefill(asset)
+
+    def _prefill(self, asset: dict[str, Any]) -> None:
+        ticker = asset.get("ticker") or ""
+        self._ticker_combo.setCurrentText(ticker)
+        self._name.setText(asset.get("name", ""))
+
+        atype = asset.get("asset_type", "acao")
+        display = _ASSET_TYPE_DISPLAY.get(atype, "Ação (B3)")
+        idx = self._type_combo.findText(display)
+        if idx >= 0:
+            self._type_combo.setCurrentIndex(idx)
+
+        liq = asset.get("liquidity", "D+2")
+        liq_display = _LIQUIDITY_DISPLAY.get(liq, "D+2 (liquidação B3)")
+        idx = self._liquidity_combo.findText(liq_display)
+        if idx >= 0:
+            self._liquidity_combo.setCurrentIndex(idx)
+
+        indexer = asset.get("indexer")
+        if indexer:
+            idx = self._indexer_combo.findText(indexer)
+            if idx >= 0:
+                self._indexer_combo.setCurrentIndex(idx)
+
+        maturity_iso = asset.get("maturity_date")
+        if maturity_iso:
+            from PyQt6.QtCore import QDate
+            try:
+                d = date.fromisoformat(maturity_iso)
+                self._maturity.setDate(QDate(d.year, d.month, d.day))
+                self._has_maturity.setChecked(True)
+            except (ValueError, TypeError):
+                pass
+
+        self._sector.setText(asset.get("sector") or "")
+        self._notes.setPlainText(asset.get("notes") or "")
+
+
 # ======================================================================
 # Página principal de Investimentos
 # ======================================================================
@@ -477,6 +674,7 @@ _COL_TYPE = 2
 _COL_QTY = 3
 _COL_AVG = 4
 _COL_COST = 5
+_COL_ACTIONS = 6
 
 
 class InvestmentsPage(QWidget):
@@ -494,9 +692,10 @@ class InvestmentsPage(QWidget):
         self._client = ApiClient()
         self._worker: InvestmentsWorker | None = None
         self._save_worker: SaveAssetWorker | SaveOperationWorker | None = None
+        self._update_worker: UpdateAssetWorker | None = None
 
-        # Cache dos ativos para popular o combo de operações
         self._raw_assets: list[dict] = []
+        self._assets: list[dict] = []
 
         self._build_ui()
         self.load_data()
@@ -594,7 +793,7 @@ class InvestmentsPage(QWidget):
         return bar
 
     def _build_table(self) -> QTableWidget:
-        headers = ["Ticker", "Nome", "Tipo", "Quantidade", "Preço Médio", "Valor Investido"]
+        headers = ["Ticker", "Nome", "Tipo", "Quantidade", "Preço Médio", "Valor Investido", "Ações"]
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -605,6 +804,8 @@ class InvestmentsPage(QWidget):
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_ACTIONS, 50)
 
         return table
 
@@ -661,9 +862,9 @@ class InvestmentsPage(QWidget):
     # ------------------------------------------------------------------
 
     def _on_data_ready(
-        self, positions: list[dict], portfolio: dict, liquidity: dict
+        self, assets: list[dict], positions: list[dict], portfolio: dict, liquidity: dict
     ) -> None:
-        # Guarda ativos brutos para o diálogo de operações
+        self._assets = assets
         self._raw_assets = [
             {
                 "id": pos["asset_id"],
@@ -747,6 +948,12 @@ class InvestmentsPage(QWidget):
                     )
                 self._table.setItem(row, col, item)
 
+            asset_id = pos["asset_id"]
+            edit_btn = QPushButton("✏️")
+            edit_btn.setToolTip("Editar ativo")
+            edit_btn.clicked.connect(lambda _, aid=asset_id: self._open_edit_asset_dialog(aid))
+            self._table.setCellWidget(row, _COL_ACTIONS, edit_btn)
+
     def _populate_liquidity(self, liquidity: dict, total_portfolio: float) -> None:
         d0 = float(liquidity.get("d0_value", 0))
         d1 = float(liquidity.get("d1_value", 0))
@@ -765,6 +972,24 @@ class InvestmentsPage(QWidget):
     # ------------------------------------------------------------------
     # Diálogos
     # ------------------------------------------------------------------
+
+    def _open_edit_asset_dialog(self, asset_id: int) -> None:
+        asset = next((a for a in self._assets if a["id"] == asset_id), None)
+        if asset is None:
+            QMessageBox.warning(self, "Ativo não encontrado", "Dados do ativo não encontrados.")
+            return
+        dialog = EditAssetDialog(asset, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_payload()
+        if self._update_worker and self._update_worker.isRunning():
+            return
+        self._update_worker = UpdateAssetWorker(self._client, asset_id, payload)
+        self._update_worker.updated.connect(lambda _: self.load_data())
+        self._update_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
+        )
+        self._update_worker.start()
 
     def _open_add_asset_dialog(self) -> None:
         dialog = NewAssetDialog(parent=self)

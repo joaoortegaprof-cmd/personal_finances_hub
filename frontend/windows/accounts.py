@@ -94,6 +94,28 @@ class SaveAccountWorker(QThread):
             self.error_occurred.emit(f"Erro inesperado: {exc}")
 
 
+class UpdateAccountWorker(QThread):
+    """Executa PUT /accounts/{id} em background."""
+
+    updated = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, account_id: int, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self._client = client
+        self._account_id = account_id
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client.update_account(self._account_id, self._payload)
+            self.updated.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
 class DeleteAccountWorker(QThread):
     """Executa DELETE /accounts/{id} em background."""
 
@@ -236,6 +258,54 @@ class AccountDialog(QDialog):
 
 
 # ======================================================================
+# Diálogo de edição de conta
+# ======================================================================
+
+
+class EditAccountDialog(AccountDialog):
+    """Formulário modal para editar uma conta existente (pré-preenchido)."""
+
+    def __init__(self, account: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Editar Conta")
+        self._account_id = account["id"]
+        self._prefill(account)
+
+    def _prefill(self, account: dict[str, Any]) -> None:
+        self._name.setText(account.get("name", ""))
+        self._bank.setText(account.get("bank_name", ""))
+
+        acc_type = account.get("account_type", "corrente")
+        display = _TYPE_DISPLAY.get(acc_type, "Conta corrente")
+        idx = self._type.findText(display)
+        if idx >= 0:
+            self._type.setCurrentIndex(idx)
+
+        currency = account.get("currency", "BRL")
+        idx = self._currency.findText(currency)
+        if idx >= 0:
+            self._currency.setCurrentIndex(idx)
+
+        try:
+            self._initial_balance.setValue(float(account.get("initial_balance", 0)))
+        except (TypeError, ValueError):
+            pass
+
+        iso = account.get("initial_balance_date", "")
+        if iso:
+            from PyQt6.QtCore import QDate
+            try:
+                d = date.fromisoformat(iso)
+                self._balance_date.setDate(QDate(d.year, d.month, d.day))
+            except (ValueError, TypeError):
+                pass
+
+    def get_payload(self) -> dict[str, Any]:
+        payload = super().get_payload()
+        return payload
+
+
+# ======================================================================
 # Página principal de Contas
 # ======================================================================
 
@@ -255,6 +325,7 @@ class AccountsPage(QWidget):
         self._client = ApiClient()
         self._worker: AccountsWorker | None = None
         self._save_worker: SaveAccountWorker | None = None
+        self._update_worker: UpdateAccountWorker | None = None
         self._delete_worker: DeleteAccountWorker | None = None
         self._accounts: list[dict] = []
         self._build_ui()
@@ -323,7 +394,7 @@ class AccountsPage(QWidget):
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_ACTIONS, 90)
+        table.setColumnWidth(_COL_ACTIONS, 170)
 
         return table
 
@@ -373,13 +444,26 @@ class AccountsPage(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._table.setItem(row, col, item)
 
-            # Botão excluir na coluna de ações
+            # Container com botões Editar e Excluir
+            actions = QWidget()
+            actions_layout = QHBoxLayout(actions)
+            actions_layout.setContentsMargins(4, 2, 4, 2)
+            actions_layout.setSpacing(4)
+
+            edit_btn = QPushButton("✏️")
+            edit_btn.setToolTip("Editar conta")
+            edit_btn.setFixedWidth(36)
+            edit_btn.clicked.connect(lambda _, a=acc: self._open_edit_dialog(a))
+
             del_btn = QPushButton("Excluir")
             del_btn.setProperty("class", "danger")
             del_btn.style().unpolish(del_btn)
             del_btn.style().polish(del_btn)
             del_btn.clicked.connect(lambda _, a=acc: self._confirm_delete(a))
-            self._table.setCellWidget(row, _COL_ACTIONS, del_btn)
+
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(del_btn)
+            self._table.setCellWidget(row, _COL_ACTIONS, actions)
 
     # ------------------------------------------------------------------
     # Criação
@@ -402,6 +486,27 @@ class AccountsPage(QWidget):
 
     def _on_save_error(self, message: str) -> None:
         QMessageBox.critical(self, "Erro ao salvar", message)
+
+    # ------------------------------------------------------------------
+    # Edição
+    # ------------------------------------------------------------------
+
+    def _open_edit_dialog(self, account: dict) -> None:
+        dialog = EditAccountDialog(account, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_payload()
+        self._start_update(account["id"], payload)
+
+    def _start_update(self, account_id: int, payload: dict) -> None:
+        if self._update_worker and self._update_worker.isRunning():
+            return
+        self._update_worker = UpdateAccountWorker(self._client, account_id, payload)
+        self._update_worker.updated.connect(lambda _: self.load_data())
+        self._update_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
+        )
+        self._update_worker.start()
 
     # ------------------------------------------------------------------
     # Exclusão

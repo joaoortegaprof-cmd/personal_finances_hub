@@ -99,6 +99,28 @@ class TransactionsWorker(QThread):
             self.error_occurred.emit(f"Erro inesperado: {exc}")
 
 
+class UpdateTransactionWorker(QThread):
+    """Executa PUT /transactions/{id} em background."""
+
+    updated = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, tx_id: int, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self._client = client
+        self._tx_id = tx_id
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client.update_transaction(self._tx_id, self._payload)
+            self.updated.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
 class SaveTransactionWorker(QThread):
     """
     Executa POST /transactions em background para não travar a UI enquanto
@@ -297,6 +319,57 @@ class NewTransactionDialog(QDialog):
         return payload
 
 
+class EditTransactionDialog(NewTransactionDialog):
+    """Formulário modal para editar um lançamento existente (pré-preenchido)."""
+
+    def __init__(self, tx: dict[str, Any], accounts: list[dict], parent: QWidget | None = None) -> None:
+        super().__init__(accounts, parent)
+        self.setWindowTitle("Editar Lançamento")
+        self._tx_id = tx["id"]
+        self._prefill(tx)
+
+    def _prefill(self, tx: dict[str, Any]) -> None:
+        self._desc.setText(tx.get("description", ""))
+
+        try:
+            self._amount.setValue(float(tx.get("amount", 0)))
+        except (TypeError, ValueError):
+            pass
+
+        iso = tx.get("transaction_date", "")
+        if iso:
+            from PyQt6.QtCore import QDate
+            try:
+                d = date.fromisoformat(iso)
+                self._date_edit.setDate(QDate(d.year, d.month, d.day))
+            except (ValueError, TypeError):
+                pass
+
+        _type_rev = {v: k for k, v in _TYPE_LABELS.items()}
+        tx_type = tx.get("transaction_type", "despesa")
+        display = _type_rev.get(tx_type, "Despesa")
+        idx = self._type_combo.findText(display)
+        if idx >= 0:
+            self._type_combo.setCurrentIndex(idx)
+
+        _cat_rev = {v: k for k, v in _CATEGORY_LABELS.items()}
+        cat = tx.get("category", "outros")
+        cat_display = _cat_rev.get(cat, "Outros")
+        idx = self._cat_combo.findText(cat_display)
+        if idx >= 0:
+            self._cat_combo.setCurrentIndex(idx)
+
+        account_id = tx.get("account_id")
+        if account_id is not None:
+            for i in range(self._account_combo.count()):
+                if self._account_combo.itemData(i) == account_id:
+                    self._account_combo.setCurrentIndex(i)
+                    break
+
+        notes = tx.get("notes") or ""
+        self._notes.setPlainText(notes)
+
+
 # ======================================================================
 # Página principal de Lançamentos
 # ======================================================================
@@ -312,6 +385,7 @@ _COL_CAT = 2
 _COL_ACCOUNT = 3
 _COL_TYPE = 4
 _COL_AMOUNT = 5
+_COL_ACTIONS = 6
 
 
 class TransactionsPage(QWidget):
@@ -330,10 +404,10 @@ class TransactionsPage(QWidget):
         self._client = ApiClient()
         self._worker: TransactionsWorker | None = None
         self._save_worker: SaveTransactionWorker | None = None
+        self._update_worker: UpdateTransactionWorker | None = None
 
-        # Cache da lista completa de transações (antes de filtros client-side)
         self._all_transactions: list[dict] = []
-        # Cache de contas para popular o diálogo de criação
+        self._filtered_transactions: list[dict] = []
         self._accounts: list[dict] = []
 
         self._build_ui()
@@ -457,7 +531,7 @@ class TransactionsPage(QWidget):
         setEditTriggers(NoEditTriggers) → somente leitura.
         setAlternatingRowColors → facilita leitura de linhas longas.
         """
-        headers = ["Data", "Descrição", "Categoria", "Conta", "Tipo", "Valor"]
+        headers = ["Data", "Descrição", "Categoria", "Conta", "Tipo", "Valor", "Ações"]
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -465,10 +539,11 @@ class TransactionsPage(QWidget):
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
 
-        # Coluna de descrição expande; demais têm tamanho fixo ao conteúdo
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_COL_DESC, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_ACTIONS, 50)
 
         return table
 
@@ -572,6 +647,7 @@ class TransactionsPage(QWidget):
                     continue
             filtered.append(tx)
 
+        self._filtered_transactions = filtered
         self._populate_table(filtered)
         self._refresh_totals(filtered)
 
@@ -601,12 +677,16 @@ class TransactionsPage(QWidget):
             for col, (text, color) in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
-                # Valor alinhado à direita para facilitar comparação visual
                 if col == _COL_AMOUNT:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self._table.setItem(row, col, item)
+
+            edit_btn = QPushButton("✏️")
+            edit_btn.setToolTip("Editar lançamento")
+            edit_btn.clicked.connect(lambda _, t=tx: self._open_edit_dialog(t))
+            self._table.setCellWidget(row, _COL_ACTIONS, edit_btn)
 
     def _refresh_totals(self, transactions: list[dict]) -> None:
         """Recalcula e exibe os totais de receitas, despesas e saldo."""
@@ -627,6 +707,27 @@ class TransactionsPage(QWidget):
         self._total_balance.setStyleSheet(
             f"color: {balance_color}; font-weight: 600; font-size: 13px;"
         )
+
+    # ------------------------------------------------------------------
+    # Diálogo de edição
+    # ------------------------------------------------------------------
+
+    def _open_edit_dialog(self, tx: dict) -> None:
+        dialog = EditTransactionDialog(tx, self._accounts, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_payload()
+        self._start_update(tx["id"], payload)
+
+    def _start_update(self, tx_id: int, payload: dict) -> None:
+        if self._update_worker and self._update_worker.isRunning():
+            return
+        self._update_worker = UpdateTransactionWorker(self._client, tx_id, payload)
+        self._update_worker.updated.connect(lambda _: self.load_data())
+        self._update_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
+        )
+        self._update_worker.start()
 
     # ------------------------------------------------------------------
     # Diálogo de criação

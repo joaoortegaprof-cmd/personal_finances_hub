@@ -21,16 +21,21 @@ from __future__ import annotations
 import json
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -39,8 +44,61 @@ from frontend.components.api_client import ApiClient, ApiError
 
 
 # ======================================================================
-# Worker
+# Workers
 # ======================================================================
+
+
+_ASSET_TYPE_DISPLAY = {
+    "acao": "Ação",
+    "fii": "FII",
+    "etf": "ETF",
+    "tesouro_direto": "Tesouro",
+    "renda_fixa": "Renda Fixa",
+    "criptomoeda": "Cripto",
+    "acao_internacional": "Ação Int.",
+    "previdencia": "Previdência",
+    "outros": "Outros",
+}
+
+
+class PortfolioQuotesWorker(QThread):
+    """Carrega ativos cadastrados e busca cotação para cada ticker em background."""
+
+    data_ready = pyqtSignal(list)   # lista de dicts com ticker, name, type, price, change_pct
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            assets = self._client.get_assets()
+            result = []
+            for asset in assets:
+                ticker = asset.get("ticker")
+                entry = {
+                    "ticker": ticker or "—",
+                    "name": asset.get("name", ""),
+                    "asset_type": asset.get("asset_type", ""),
+                    "price": None,
+                    "change_pct": None,
+                    "currency": "BRL",
+                }
+                if ticker:
+                    try:
+                        quote = self._client.get_market_quote(ticker)
+                        entry["price"] = float(quote.get("price", 0))
+                        entry["change_pct"] = quote.get("change_pct")
+                        entry["currency"] = quote.get("currency", "BRL")
+                    except ApiError:
+                        pass
+                result.append(entry)
+            self.data_ready.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
 
 
 class MarketWorker(QThread):
@@ -101,8 +159,10 @@ class MarketPage(QWidget):
         super().__init__()
         self._client = ApiClient()
         self._worker: MarketWorker | None = None
-        self._web_view = None  # carregado sob demanda
+        self._portfolio_worker: PortfolioQuotesWorker | None = None
+        self._web_view = None
         self._build_ui()
+        self._load_portfolio()
 
     # ------------------------------------------------------------------
     # UI
@@ -124,7 +184,10 @@ class MarketPage(QWidget):
         main.setContentsMargins(32, 24, 32, 24)
         main.setSpacing(20)
 
-        # --- Toolbar de busca ---
+        # --- Seção: cotações da carteira ---
+        main.addLayout(self._build_portfolio_section())
+
+        # --- Toolbar de busca manual ---
         toolbar = QHBoxLayout()
         toolbar.setSpacing(12)
 
@@ -224,7 +287,122 @@ class MarketPage(QWidget):
         outer.addWidget(scroll)
 
     # ------------------------------------------------------------------
-    # Busca
+    # Seção de carteira
+    # ------------------------------------------------------------------
+
+    def _build_portfolio_section(self) -> QVBoxLayout:
+        layout = QVBoxLayout()
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        portfolio_label = QLabel("Ativos da Carteira")
+        portfolio_label.setObjectName("sectionTitle")
+        header_row.addWidget(portfolio_label)
+        header_row.addStretch()
+
+        refresh_btn = QPushButton("↻ Atualizar Cotações")
+        refresh_btn.clicked.connect(self._load_portfolio)
+        header_row.addWidget(refresh_btn)
+        layout.addLayout(header_row)
+
+        self._portfolio_loading = QLabel("Carregando ativos…")
+        self._portfolio_loading.setObjectName("loadingLabel")
+        self._portfolio_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._portfolio_loading)
+
+        self._portfolio_table = self._build_portfolio_table()
+        self._portfolio_table.setVisible(False)
+        layout.addWidget(self._portfolio_table)
+
+        return layout
+
+    def _build_portfolio_table(self) -> QTableWidget:
+        headers = ["Ticker", "Nome", "Tipo", "Cotação", "Variação"]
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.setMaximumHeight(240)
+
+        hdr = table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+
+        table.itemDoubleClicked.connect(self._on_portfolio_row_clicked)
+        return table
+
+    def _load_portfolio(self) -> None:
+        if self._portfolio_worker and self._portfolio_worker.isRunning():
+            return
+        self._portfolio_table.setVisible(False)
+        self._portfolio_loading.setText("Carregando ativos…")
+        self._portfolio_loading.setVisible(True)
+
+        self._portfolio_worker = PortfolioQuotesWorker(self._client)
+        self._portfolio_worker.data_ready.connect(self._on_portfolio_ready)
+        self._portfolio_worker.error_occurred.connect(
+            lambda msg: self._portfolio_loading.setText(f"Erro: {msg}")
+        )
+        self._portfolio_worker.start()
+
+    def _on_portfolio_ready(self, entries: list[dict]) -> None:
+        self._portfolio_loading.setVisible(False)
+        if not entries:
+            self._portfolio_loading.setText("Nenhum ativo cadastrado.")
+            self._portfolio_loading.setVisible(True)
+            return
+
+        self._portfolio_table.setRowCount(len(entries))
+        for row, e in enumerate(entries):
+            ticker = e.get("ticker") or "—"
+            name = e.get("name", "")
+            atype = _ASSET_TYPE_DISPLAY.get(e.get("asset_type", ""), e.get("asset_type", ""))
+            price = e.get("price")
+            change = e.get("change_pct")
+            currency = e.get("currency", "BRL")
+
+            if price is not None:
+                sym = "R$" if currency == "BRL" else "$"
+                price_str = f"{sym} {price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            else:
+                price_str = "—"
+
+            if change is not None:
+                chg = float(change)
+                sign = "+" if chg >= 0 else ""
+                change_str = f"{sign}{chg:.2f}%"
+                change_color = "#00C896" if chg >= 0 else "#FF6B6B"
+            else:
+                change_str = "—"
+                change_color = "#8B90A7"
+
+            cells = [
+                (ticker, "#4A9EFF"),
+                (name, "#FFFFFF"),
+                (atype, "#8B90A7"),
+                (price_str, "#FFFFFF"),
+                (change_str, change_color),
+            ]
+            for col, (text, color) in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setForeground(QColor(color))
+                if col in (3, 4):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._portfolio_table.setItem(row, col, item)
+
+        self._portfolio_table.setVisible(True)
+
+    def _on_portfolio_row_clicked(self, item: QTableWidgetItem) -> None:
+        row = item.row()
+        ticker_item = self._portfolio_table.item(row, 0)
+        if ticker_item and ticker_item.text() not in ("—", ""):
+            self._ticker_input.setText(ticker_item.text())
+            self._search()
+
+    # ------------------------------------------------------------------
+    # Busca manual
     # ------------------------------------------------------------------
 
     def _search(self) -> None:

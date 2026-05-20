@@ -59,6 +59,20 @@ async def create_asset(payload: AssetCreate, db: AsyncSession = Depends(get_db))
         )
 
 
+@assets_router.put("/{asset_id}", response_model=AssetOut)
+async def update_asset(
+    asset_id: int,
+    payload: AssetUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Atualiza os campos informados de um ativo existente."""
+    repo = AssetRepository(db)
+    updated = await repo.update(asset_id, payload.model_dump(exclude_none=True))
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ativo não encontrado")
+    return updated
+
+
 @assets_router.get("/{asset_id}/position", response_model=ConsolidatedPositionOut)
 async def get_asset_position(asset_id: int, db: AsyncSession = Depends(get_db)):
     """Retorna a posição consolidada: quantidade líquida e preço médio de aquisição."""
