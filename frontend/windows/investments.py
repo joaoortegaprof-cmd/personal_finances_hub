@@ -29,7 +29,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -316,76 +317,7 @@ class NewAssetDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(12)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        # Tipo de ativo — controla qual widget de ticker mostrar
-        self._type_combo = QComboBox()
-        for label in _ASSET_TYPE_LABELS:
-            self._type_combo.addItem(label)
-        self._type_combo.currentTextChanged.connect(self._on_type_changed)
-        form.addRow("Tipo *", self._type_combo)
-
-        # Ticker: QComboBox editável com QCompleter para STOCK/FII/ETF
-        ticker_row = QHBoxLayout()
-        ticker_row.setSpacing(6)
-
-        self._ticker_combo = QComboBox()
-        self._ticker_combo.setEditable(True)
-        self._ticker_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._ticker_combo.setMinimumWidth(180)
-        self._ticker_combo.activated.connect(self._on_ticker_activated)
-        ticker_row.addWidget(self._ticker_combo, 1)
-
-        lookup_btn = QPushButton("↻")
-        lookup_btn.setToolTip("Buscar nome do ticker")
-        lookup_btn.setFixedWidth(36)
-        lookup_btn.clicked.connect(self._lookup_name)
-        ticker_row.addWidget(lookup_btn)
-
-        ticker_widget = QWidget()
-        ticker_widget.setLayout(ticker_row)
-        form.addRow("Ticker", ticker_widget)
-
-        # Nome completo do ativo
-        self._name = QLineEdit()
-        self._name.setPlaceholderText("Ex: Petrobras PN, CDB Nubank 110% CDI")
-        form.addRow("Nome *", self._name)
-
-        # Liquidez
-        self._liquidity_combo = QComboBox()
-        for label in _LIQUIDITY_LABELS:
-            self._liquidity_combo.addItem(label)
-        self._liquidity_combo.setCurrentIndex(2)
-        form.addRow("Liquidez", self._liquidity_combo)
-
-        # Indexador
-        self._indexer_combo = QComboBox()
-        for label in _INDEXER_LABELS:
-            self._indexer_combo.addItem(label)
-        form.addRow("Indexador", self._indexer_combo)
-
-        # Data de vencimento
-        self._maturity = QDateEdit()
-        self._maturity.setCalendarPopup(True)
-        self._maturity.setSpecialValueText("Sem vencimento")
-        self._maturity.setDisplayFormat("dd/MM/yyyy")
-        from PyQt6.QtCore import QDate
-        self._maturity.setDate(QDate(2099, 12, 31))
-        self._has_maturity = QCheckBox("Definir data de vencimento")
-        self._has_maturity.toggled.connect(self._maturity.setEnabled)
-        self._maturity.setEnabled(False)
-        form.addRow(self._has_maturity, self._maturity)
-
-        # Setor
-        self._sector = QLineEdit()
-        self._sector.setPlaceholderText("Ex: Energia, Financeiro, Imóveis (opcional)")
-        form.addRow("Setor", self._sector)
-
-        # Observações
-        self._notes = QPlainTextEdit()
-        self._notes.setPlaceholderText("Observações opcionais…")
-        self._notes.setMaximumHeight(72)
-        form.addRow("Observações", self._notes)
-
+        self._populate_asset_form(form)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -401,8 +333,72 @@ class NewAssetDialog(QDialog):
             save_btn.style().polish(save_btn)
         layout.addWidget(buttons)
 
-        # Inicializa o combo de ticker para o tipo padrão
         self._on_type_changed(self._type_combo.currentText())
+
+    def _populate_asset_form(self, form: QFormLayout) -> None:
+        """Adiciona todos os campos do ativo a um QFormLayout existente."""
+        self._type_combo = QComboBox()
+        for label in _ASSET_TYPE_LABELS:
+            self._type_combo.addItem(label)
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
+        form.addRow("Tipo *", self._type_combo)
+
+        ticker_row = QHBoxLayout()
+        ticker_row.setSpacing(6)
+        self._ticker_combo = QComboBox()
+        self._ticker_combo.setEditable(True)
+        self._ticker_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._ticker_combo.setMinimumWidth(180)
+        self._ticker_combo.activated.connect(self._on_ticker_activated)
+        ticker_row.addWidget(self._ticker_combo, 1)
+        lookup_btn = QPushButton("↻")
+        lookup_btn.setToolTip("Buscar nome do ticker")
+        lookup_btn.setFixedWidth(36)
+        lookup_btn.clicked.connect(self._lookup_name)
+        ticker_row.addWidget(lookup_btn)
+        ticker_widget = QWidget()
+        ticker_widget.setLayout(ticker_row)
+        form.addRow("Ticker", ticker_widget)
+
+        self._name = QLineEdit()
+        self._name.setPlaceholderText("Ex: Petrobras PN, CDB Nubank 110% CDI")
+        form.addRow("Nome *", self._name)
+
+        self._liquidity_combo = QComboBox()
+        for label in _LIQUIDITY_LABELS:
+            self._liquidity_combo.addItem(label)
+        self._liquidity_combo.setCurrentIndex(2)
+        form.addRow("Liquidez", self._liquidity_combo)
+
+        self._emergency_fund_cb = QCheckBox("Compõe reserva de emergência")
+        self._emergency_fund_cb.setToolTip(
+            "Apenas ativos com liquidez D+0 podem compor a reserva de emergência."
+        )
+        form.addRow("", self._emergency_fund_cb)
+
+        self._indexer_combo = QComboBox()
+        for label in _INDEXER_LABELS:
+            self._indexer_combo.addItem(label)
+        form.addRow("Indexador", self._indexer_combo)
+
+        self._maturity = QDateEdit()
+        self._maturity.setCalendarPopup(True)
+        self._maturity.setSpecialValueText("Sem vencimento")
+        self._maturity.setDisplayFormat("dd/MM/yyyy")
+        self._maturity.setDate(QDate(2099, 12, 31))
+        self._has_maturity = QCheckBox("Definir data de vencimento")
+        self._has_maturity.toggled.connect(self._maturity.setEnabled)
+        self._maturity.setEnabled(False)
+        form.addRow(self._has_maturity, self._maturity)
+
+        self._sector = QLineEdit()
+        self._sector.setPlaceholderText("Ex: Energia, Financeiro, Imóveis (opcional)")
+        form.addRow("Setor", self._sector)
+
+        self._notes = QPlainTextEdit()
+        self._notes.setPlaceholderText("Observações opcionais…")
+        self._notes.setMaximumHeight(72)
+        form.addRow("Observações", self._notes)
 
     def _on_type_changed(self, type_label: str) -> None:
         api_type = _ASSET_TYPE_LABELS.get(type_label, "")
@@ -457,6 +453,18 @@ class NewAssetDialog(QDialog):
             QMessageBox.warning(self, "Campo obrigatório", "Informe o nome do ativo.")
             self._name.setFocus()
             return
+
+        if self._emergency_fund_cb.isChecked():
+            liq_value = _LIQUIDITY_LABELS[self._liquidity_combo.currentText()]
+            if liq_value != "D+0":
+                QMessageBox.warning(
+                    self,
+                    "Liquidez incompatível",
+                    "Apenas ativos com liquidez D+0 podem compor a reserva de emergência.\n"
+                    "Altere a liquidez ou desmarque esta opção.",
+                )
+                return
+
         self.accept()
 
     def get_payload(self) -> dict[str, Any]:
@@ -478,6 +486,7 @@ class NewAssetDialog(QDialog):
             "name": self._name.text().strip(),
             "asset_type": _ASSET_TYPE_LABELS[self._type_combo.currentText()],
             "liquidity": liq_value,
+            "is_emergency_fund": self._emergency_fund_cb.isChecked(),
         }
 
         ticker = self._ticker_combo.currentText().strip().upper()
@@ -543,7 +552,6 @@ class NewOperationDialog(QDialog):
         # Data da operação
         self._date_edit = QDateEdit()
         self._date_edit.setCalendarPopup(True)
-        from PyQt6.QtCore import QDate
         self._date_edit.setDate(QDate.currentDate())
         self._date_edit.setDisplayFormat("dd/MM/yyyy")
         form.addRow("Data *", self._date_edit)
@@ -617,14 +625,192 @@ class NewOperationDialog(QDialog):
         }
 
 
-class EditAssetDialog(NewAssetDialog):
-    """Formulário modal para editar um ativo existente (pré-preenchido)."""
+class PositionAdjustWorker(QThread):
+    """Zera a posição atual e cria uma nova via operações compra/venda."""
 
-    def __init__(self, asset: dict[str, Any], parent: QWidget | None = None) -> None:
+    done    = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    def __init__(
+        self,
+        client: ApiClient,
+        asset_id: int,
+        quantity: float,
+        avg_price: float,
+        op_date: date,
+    ) -> None:
+        super().__init__()
+        self._client    = client
+        self._asset_id  = asset_id
+        self._quantity  = quantity
+        self._avg_price = avg_price
+        self._op_date   = op_date
+
+    def run(self) -> None:
+        try:
+            pos = self._client.get_asset_position(self._asset_id)
+            current_qty = float(pos.get("net_quantity", 0))
+            current_avg = float(pos.get("avg_price", 0))
+
+            if current_qty > 0:
+                self._client.create_asset_operation(
+                    self._asset_id,
+                    {
+                        "operation_date": self._op_date.isoformat(),
+                        "quantity": f"{current_qty:.6f}",
+                        "unit_price": f"{current_avg:.2f}",
+                        "fees": "0.00",
+                        "operation_type": "venda",
+                        "notes": "Ajuste manual de posição",
+                    },
+                )
+
+            if self._quantity > 0:
+                self._client.create_asset_operation(
+                    self._asset_id,
+                    {
+                        "operation_date": self._op_date.isoformat(),
+                        "quantity": f"{self._quantity:.6f}",
+                        "unit_price": f"{self._avg_price:.2f}",
+                        "fees": "0.00",
+                        "operation_type": "compra",
+                        "notes": "Ajuste manual de posição",
+                    },
+                )
+            self.done.emit()
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class EditAssetDialog(NewAssetDialog):
+    """
+    Formulário modal para editar um ativo — duas abas:
+      1. Dados do Ativo  — mesmos campos do cadastro
+      2. Posição na Carteira — ajuste direto de qty/preço médio
+    """
+
+    def __init__(
+        self,
+        asset: dict[str, Any],
+        client: ApiClient | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        self._edit_client = client
         super().__init__(parent)
         self.setWindowTitle("Editar Ativo")
         self._asset_id = asset["id"]
         self._prefill(asset)
+
+    def _build_ui(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 20, 24, 20)
+        outer.setSpacing(16)
+
+        tabs = QTabWidget()
+
+        # ── Aba 1: Dados do Ativo ─────────────────────────────────────
+        tab1 = QWidget()
+        t1_layout = QVBoxLayout(tab1)
+        t1_layout.setContentsMargins(0, 12, 0, 0)
+        t1_layout.setSpacing(12)
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._populate_asset_form(form)
+        t1_layout.addLayout(form)
+        t1_layout.addStretch()
+        tabs.addTab(tab1, "Dados do Ativo")
+
+        # ── Aba 2: Posição na Carteira ────────────────────────────────
+        tab2 = QWidget()
+        t2_layout = QVBoxLayout(tab2)
+        t2_layout.setContentsMargins(0, 12, 0, 0)
+        t2_layout.setSpacing(12)
+
+        warn = QLabel(
+            "Atenção: isto substituirá a posição atual pelo valor informado. "
+            "O histórico de operações será preservado."
+        )
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color: #FFB347; font-size: 11px;")
+        t2_layout.addWidget(warn)
+
+        pos_form = QFormLayout()
+        pos_form.setSpacing(12)
+        pos_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._pos_qty = QDoubleSpinBox()
+        self._pos_qty.setRange(0.0, 99_999_999.0)
+        self._pos_qty.setDecimals(6)
+        self._pos_qty.setValue(0.0)
+        pos_form.addRow("Quantidade", self._pos_qty)
+
+        self._pos_avg_price = QDoubleSpinBox()
+        self._pos_avg_price.setRange(0.0, 999_999.99)
+        self._pos_avg_price.setDecimals(2)
+        self._pos_avg_price.setPrefix("R$ ")
+        self._pos_avg_price.setValue(0.0)
+        pos_form.addRow("Preço médio", self._pos_avg_price)
+
+        self._pos_date = QDateEdit()
+        self._pos_date.setCalendarPopup(True)
+        self._pos_date.setDisplayFormat("dd/MM/yyyy")
+        self._pos_date.setDate(QDate.currentDate())
+        pos_form.addRow("Data da posição", self._pos_date)
+
+        t2_layout.addLayout(pos_form)
+
+        recalc_btn = QPushButton("Recalcular pelo histórico")
+        recalc_btn.setToolTip("Busca as operações reais e preenche qty/preço médio")
+        recalc_btn.clicked.connect(self._recalc_from_history)
+        t2_layout.addWidget(recalc_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        t2_layout.addStretch()
+        tabs.addTab(tab2, "Posição na Carteira")
+
+        outer.addWidget(tabs)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        save_btn = buttons.button(QDialogButtonBox.StandardButton.Save)
+        if save_btn:
+            save_btn.setProperty("class", "success")
+            save_btn.style().unpolish(save_btn)
+            save_btn.style().polish(save_btn)
+        outer.addWidget(buttons)
+
+        self._on_type_changed(self._type_combo.currentText())
+
+    def _recalc_from_history(self) -> None:
+        if not self._edit_client:
+            return
+        try:
+            pos = self._edit_client.get_asset_position(self._asset_id)
+            qty = float(pos.get("net_quantity", 0))
+            avg = float(pos.get("avg_price", 0))
+            self._pos_qty.setValue(qty)
+            self._pos_avg_price.setValue(avg)
+        except Exception:
+            pass
+
+    def get_position_data(self) -> dict[str, Any] | None:
+        """Retorna dados de ajuste de posição, ou None se não foi preenchido."""
+        qty = self._pos_qty.value()
+        avg = self._pos_avg_price.value()
+        if qty == 0.0 and avg == 0.0:
+            return None
+        qd = self._pos_date.date()
+        return {
+            "quantity": qty,
+            "avg_price": avg,
+            "date": date(qd.year(), qd.month(), qd.day()),
+        }
 
     def _prefill(self, asset: dict[str, Any]) -> None:
         ticker = asset.get("ticker") or ""
@@ -651,7 +837,6 @@ class EditAssetDialog(NewAssetDialog):
 
         maturity_iso = asset.get("maturity_date")
         if maturity_iso:
-            from PyQt6.QtCore import QDate
             try:
                 d = date.fromisoformat(maturity_iso)
                 self._maturity.setDate(QDate(d.year, d.month, d.day))
@@ -661,6 +846,7 @@ class EditAssetDialog(NewAssetDialog):
 
         self._sector.setText(asset.get("sector") or "")
         self._notes.setPlainText(asset.get("notes") or "")
+        self._emergency_fund_cb.setChecked(bool(asset.get("is_emergency_fund", False)))
 
 
 # ======================================================================
@@ -978,18 +1164,37 @@ class InvestmentsPage(QWidget):
         if asset is None:
             QMessageBox.warning(self, "Ativo não encontrado", "Dados do ativo não encontrados.")
             return
-        dialog = EditAssetDialog(asset, parent=self)
+        dialog = EditAssetDialog(asset, client=self._client, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+
+        # 1. Atualiza dados do ativo
         payload = dialog.get_payload()
-        if self._update_worker and self._update_worker.isRunning():
-            return
-        self._update_worker = UpdateAssetWorker(self._client, asset_id, payload)
-        self._update_worker.updated.connect(lambda _: self.load_data())
-        self._update_worker.error_occurred.connect(
-            lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
-        )
-        self._update_worker.start()
+        if not (self._update_worker and self._update_worker.isRunning()):
+            self._update_worker = UpdateAssetWorker(self._client, asset_id, payload)
+            self._update_worker.updated.connect(lambda _: self.load_data())
+            self._update_worker.error_occurred.connect(
+                lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
+            )
+            self._update_worker.start()
+
+        # 2. Ajusta posição se a aba 2 foi preenchida
+        pos_data = dialog.get_position_data()
+        if pos_data:
+            pos_worker = PositionAdjustWorker(
+                self._client,
+                asset_id,
+                pos_data["quantity"],
+                pos_data["avg_price"],
+                pos_data["date"],
+            )
+            pos_worker.done.connect(lambda: self.load_data())
+            pos_worker.error_occurred.connect(
+                lambda msg: QMessageBox.critical(self, "Erro ao ajustar posição", msg)
+            )
+            pos_worker.start()
+            self._pos_workers = getattr(self, "_pos_workers", [])
+            self._pos_workers.append(pos_worker)
 
     def _open_add_asset_dialog(self) -> None:
         dialog = NewAssetDialog(parent=self)

@@ -18,6 +18,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -198,6 +199,12 @@ class Asset(Base):
 
     # Anotações livres — taxa contratada, instituição emissora, CNPJ do fundo etc.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Indica se este ativo compõe a reserva de emergência do usuário.
+    # Somente ativos com liquidez D+0 devem ter este campo marcado.
+    is_emergency_fund: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
 
     # -----------------------------------------------------------------
     # Auditoria

@@ -21,6 +21,7 @@ class AssetCreate(BaseModel):
     maturity_date: date | None = None
     liquidity: LiquidityWindow = LiquidityWindow.D2
     notes: str | None = None
+    is_emergency_fund: bool = False
 
 
 class AssetUpdate(BaseModel):
@@ -34,6 +35,7 @@ class AssetUpdate(BaseModel):
     maturity_date: date | None = None
     liquidity: LiquidityWindow | None = None
     notes: str | None = None
+    is_emergency_fund: bool | None = None
 
 
 class AssetOut(BaseModel):
@@ -50,6 +52,7 @@ class AssetOut(BaseModel):
     maturity_date: date | None
     liquidity: LiquidityWindow
     notes: str | None
+    is_emergency_fund: bool
     created_at: datetime
     updated_at: datetime
 

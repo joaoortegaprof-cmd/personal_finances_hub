@@ -28,7 +28,7 @@ import calendar
 from datetime import date, datetime
 from typing import Any
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -48,6 +48,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -387,6 +389,271 @@ _COL_TYPE = 4
 _COL_AMOUNT = 5
 _COL_ACTIONS = 6
 
+# Colunas da tabela de dívidas
+_DEBT_COL_NAME = 0
+_DEBT_COL_INST = 1
+_DEBT_COL_TYPE = 2
+_DEBT_COL_REMAINING = 3
+_DEBT_COL_INSTALLMENT = 4
+_DEBT_COL_RATE = 5
+_DEBT_COL_PARCELAS = 6
+_DEBT_COL_ACTIONS = 7
+
+_DEBT_TYPE_LABELS = {
+    "Financiamento":       "financiamento",
+    "Empréstimo Pessoal":  "emprestimo_pessoal",
+    "Cartão Rotativo":     "cartao_rotativo",
+    "Cheque Especial":     "cheque_especial",
+    "Outro":               "outro",
+}
+_DEBT_TYPE_DISPLAY = {v: k for k, v in _DEBT_TYPE_LABELS.items()}
+
+
+# ======================================================================
+# Workers de dívidas
+# ======================================================================
+
+
+class SaveDebtWorker(QThread):
+    """Salva uma nova dívida via POST /debts."""
+
+    saved          = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self._client  = client
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client.create_debt(self._payload)
+            self.saved.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class UpdateDebtWorker(QThread):
+    """Atualiza uma dívida via PUT /debts/{id}."""
+
+    updated        = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, debt_id: int, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self._client  = client
+        self._debt_id = debt_id
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client.update_debt(self._debt_id, self._payload)
+            self.updated.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class DeleteDebtWorker(QThread):
+    """Exclui (desativa) uma dívida via DELETE /debts/{id}."""
+
+    done           = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, debt_id: int) -> None:
+        super().__init__()
+        self._client  = client
+        self._debt_id = debt_id
+
+    def run(self) -> None:
+        try:
+            self._client.delete_debt(self._debt_id)
+            self.done.emit()
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+# ======================================================================
+# Diálogo de dívidas
+# ======================================================================
+
+
+class NewDebtDialog(QDialog):
+    """Formulário modal para cadastrar ou editar uma dívida/financiamento."""
+
+    def __init__(self, debt: dict[str, Any] | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._edit_mode = debt is not None
+        self.setWindowTitle("Editar Dívida" if self._edit_mode else "Nova Dívida")
+        self.setMinimumWidth(500)
+        self._build_ui()
+        if debt:
+            self._prefill(debt)
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
+
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._debt_name = QLineEdit()
+        self._debt_name.setPlaceholderText("Ex: Financiamento Carro, Empréstimo Banco X")
+        form.addRow("Nome *", self._debt_name)
+
+        self._institution = QLineEdit()
+        self._institution.setPlaceholderText("Ex: Bradesco, Nubank, Santander")
+        form.addRow("Instituição *", self._institution)
+
+        self._debt_type = QComboBox()
+        for label in _DEBT_TYPE_LABELS:
+            self._debt_type.addItem(label)
+        form.addRow("Tipo *", self._debt_type)
+
+        self._total_amount = QDoubleSpinBox()
+        self._total_amount.setRange(0.01, 99_999_999.99)
+        self._total_amount.setDecimals(2)
+        self._total_amount.setPrefix("R$ ")
+        self._total_amount.setValue(0.01)
+        form.addRow("Valor total original *", self._total_amount)
+
+        self._remaining_amount = QDoubleSpinBox()
+        self._remaining_amount.setRange(0.0, 99_999_999.99)
+        self._remaining_amount.setDecimals(2)
+        self._remaining_amount.setPrefix("R$ ")
+        self._remaining_amount.setValue(0.0)
+        form.addRow("Saldo devedor atual *", self._remaining_amount)
+
+        self._interest_rate = QDoubleSpinBox()
+        self._interest_rate.setRange(0.01, 100.0)
+        self._interest_rate.setDecimals(4)
+        self._interest_rate.setSuffix("% a.m.")
+        self._interest_rate.setValue(1.0)
+        form.addRow("Taxa de juros mensal *", self._interest_rate)
+
+        self._installment_amount = QDoubleSpinBox()
+        self._installment_amount.setRange(0.01, 99_999_999.99)
+        self._installment_amount.setDecimals(2)
+        self._installment_amount.setPrefix("R$ ")
+        self._installment_amount.setValue(0.01)
+        form.addRow("Valor da parcela *", self._installment_amount)
+
+        self._total_installments = QSpinBox()
+        self._total_installments.setRange(1, 600)
+        self._total_installments.setValue(12)
+        form.addRow("Total de parcelas *", self._total_installments)
+
+        self._paid_installments = QSpinBox()
+        self._paid_installments.setRange(0, 600)
+        self._paid_installments.setValue(0)
+        form.addRow("Parcelas já pagas", self._paid_installments)
+
+        self._start_date = QDateEdit()
+        self._start_date.setCalendarPopup(True)
+        self._start_date.setDisplayFormat("dd/MM/yyyy")
+        self._start_date.setDate(QDate.currentDate())
+        form.addRow("Data de início *", self._start_date)
+
+        self._due_day = QSpinBox()
+        self._due_day.setRange(1, 28)
+        self._due_day.setValue(10)
+        form.addRow("Dia de vencimento *", self._due_day)
+
+        self._amortization = QComboBox()
+        self._amortization.addItem("PRICE (parcelas fixas)")
+        self._amortization.addItem("SAC (amortização constante) — em breve")
+        form.addRow("Sistema de amortização", self._amortization)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        save_btn = buttons.button(QDialogButtonBox.StandardButton.Save)
+        if save_btn:
+            save_btn.setProperty("class", "success")
+            save_btn.style().unpolish(save_btn)
+            save_btn.style().polish(save_btn)
+        layout.addWidget(buttons)
+
+    def _on_accept(self) -> None:
+        if not self._debt_name.text().strip():
+            QMessageBox.warning(self, "Campo obrigatório", "Informe o nome da dívida.")
+            self._debt_name.setFocus()
+            return
+        if not self._institution.text().strip():
+            QMessageBox.warning(self, "Campo obrigatório", "Informe a instituição financeira.")
+            self._institution.setFocus()
+            return
+        self.accept()
+
+    def get_payload(self) -> dict[str, Any]:
+        sd = self._start_date.date()
+        return {
+            "name":                self._debt_name.text().strip(),
+            "institution":         self._institution.text().strip(),
+            "debt_type":           _DEBT_TYPE_LABELS[self._debt_type.currentText()],
+            "total_amount":        f"{self._total_amount.value():.2f}",
+            "remaining_amount":    f"{self._remaining_amount.value():.2f}",
+            "interest_rate":       f"{self._interest_rate.value():.4f}",
+            "installment_amount":  f"{self._installment_amount.value():.2f}",
+            "total_installments":  self._total_installments.value(),
+            "paid_installments":   self._paid_installments.value(),
+            "start_date":          date(sd.year(), sd.month(), sd.day()).isoformat(),
+            "due_day":             self._due_day.value(),
+        }
+
+    def get_update_payload(self) -> dict[str, Any]:
+        """Retorna apenas campos editáveis para PUT /debts/{id}."""
+        return {
+            "name":               self._debt_name.text().strip(),
+            "institution":        self._institution.text().strip(),
+            "remaining_amount":   f"{self._remaining_amount.value():.2f}",
+            "interest_rate":      f"{self._interest_rate.value():.4f}",
+            "installment_amount": f"{self._installment_amount.value():.2f}",
+            "paid_installments":  self._paid_installments.value(),
+            "due_day":            self._due_day.value(),
+        }
+
+    def _prefill(self, debt: dict[str, Any]) -> None:
+        self._debt_name.setText(debt.get("name", ""))
+        self._institution.setText(debt.get("institution", ""))
+
+        dt = debt.get("debt_type", "financiamento")
+        display = _DEBT_TYPE_DISPLAY.get(dt, "Financiamento")
+        idx = self._debt_type.findText(display)
+        if idx >= 0:
+            self._debt_type.setCurrentIndex(idx)
+        self._debt_type.setEnabled(False)
+
+        self._total_amount.setValue(float(debt.get("total_amount", 0)))
+        self._remaining_amount.setValue(float(debt.get("remaining_amount", 0)))
+        self._interest_rate.setValue(float(debt.get("interest_rate", 1)))
+        self._installment_amount.setValue(float(debt.get("installment_amount", 0)))
+        self._total_installments.setValue(int(debt.get("total_installments", 1)))
+        self._total_installments.setEnabled(False)
+        self._paid_installments.setValue(int(debt.get("paid_installments", 0)))
+        self._due_day.setValue(int(debt.get("due_day", 10)))
+
+        iso = debt.get("start_date", "")
+        if iso:
+            try:
+                d = date.fromisoformat(str(iso)[:10])
+                self._start_date.setDate(QDate(d.year, d.month, d.day))
+            except (ValueError, TypeError):
+                pass
+        self._start_date.setEnabled(False)
+
 
 class TransactionsPage(QWidget):
     """
@@ -405,10 +672,14 @@ class TransactionsPage(QWidget):
         self._worker: TransactionsWorker | None = None
         self._save_worker: SaveTransactionWorker | None = None
         self._update_worker: UpdateTransactionWorker | None = None
+        self._save_debt_worker: SaveDebtWorker | None = None
+        self._update_debt_worker: UpdateDebtWorker | None = None
+        self._delete_debt_worker: DeleteDebtWorker | None = None
 
         self._all_transactions: list[dict] = []
         self._filtered_transactions: list[dict] = []
         self._accounts: list[dict] = []
+        self._debts: list[dict] = []
 
         self._build_ui()
         self.load_data()
@@ -422,39 +693,92 @@ class TransactionsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # Área com scroll para que a tabela não fique espremida em telas pequenas
+        tabs = QTabWidget()
+        tabs.addTab(self._build_transactions_tab(), "Lançamentos")
+        tabs.addTab(self._build_debts_tab(), "Dívidas e Financiamentos")
+        tabs.currentChanged.connect(self._on_tab_changed)
+        outer.addWidget(tabs)
+
+        # --- Rodapé de totais (fora do scroll — sempre visível) ---
+        outer.addWidget(self._build_footer())
+
+    def _build_transactions_tab(self) -> QWidget:
+        """Conteúdo da aba Lançamentos (lógica original)."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
-        content.setObjectName("dashboardContent")  # reutiliza estilo de fundo
+        content.setObjectName("dashboardContent")
         main = QVBoxLayout(content)
         main.setContentsMargins(32, 24, 32, 24)
         main.setSpacing(16)
 
-        # --- Toolbar de filtros ---
         main.addLayout(self._build_toolbar())
 
-        # --- Indicador de loading ---
         self._loading_label = QLabel("Carregando lançamentos…")
         self._loading_label.setObjectName("loadingLabel")
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main.addWidget(self._loading_label)
 
-        # --- Tabela ---
         self._table = self._build_table()
         self._table.setVisible(False)
         main.addWidget(self._table)
-
         main.addStretch()
 
         scroll.setWidget(content)
-        outer.addWidget(scroll)
+        return scroll
 
-        # --- Rodapé de totais (fora do scroll — sempre visível) ---
-        outer.addWidget(self._build_footer())
+    def _build_debts_tab(self) -> QWidget:
+        """Conteúdo da aba Dívidas e Financiamentos."""
+        page = QWidget()
+        page.setObjectName("dashboardContent")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(32, 24, 32, 24)
+        outer.setSpacing(16)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(12)
+        new_debt_btn = QPushButton("+ Nova Dívida")
+        new_debt_btn.setProperty("class", "primary")
+        new_debt_btn.style().unpolish(new_debt_btn)
+        new_debt_btn.style().polish(new_debt_btn)
+        new_debt_btn.clicked.connect(self._open_new_debt_dialog)
+        toolbar.addStretch()
+        toolbar.addWidget(new_debt_btn)
+        outer.addLayout(toolbar)
+
+        self._debt_loading_label = QLabel("Carregando dívidas…")
+        self._debt_loading_label.setObjectName("loadingLabel")
+        self._debt_loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._debt_loading_label.setVisible(False)
+        outer.addWidget(self._debt_loading_label)
+
+        self._debt_table = self._build_debt_table()
+        outer.addWidget(self._debt_table)
+        outer.addStretch()
+        return page
+
+    def _build_debt_table(self) -> QTableWidget:
+        headers = [
+            "Nome", "Instituição", "Tipo", "Saldo Devedor",
+            "Parcela", "Taxa Mensal", "Parc. Restantes", "Ações",
+        ]
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(_DEBT_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(_DEBT_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_DEBT_COL_ACTIONS, 80)
+        return table
 
     def _build_toolbar(self) -> QHBoxLayout:
         """
@@ -758,6 +1082,116 @@ class TransactionsPage(QWidget):
 
     def _on_save_error(self, message: str) -> None:
         QMessageBox.critical(self, "Erro ao salvar", message)
+
+    # ------------------------------------------------------------------
+    # Aba Dívidas: tab change + load + populate
+    # ------------------------------------------------------------------
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 1 and not self._debts:
+            self._load_debts()
+
+    def _load_debts(self) -> None:
+        self._debt_loading_label.setVisible(True)
+        self._debt_table.setVisible(False)
+        try:
+            self._debts = self._client.get_debts()
+        except Exception:
+            self._debts = []
+        self._debt_loading_label.setVisible(False)
+        self._debt_table.setVisible(True)
+        self._populate_debt_table(self._debts)
+
+    def _populate_debt_table(self, debts: list[dict]) -> None:
+        self._debt_table.setRowCount(len(debts))
+        for row, debt in enumerate(debts):
+            remaining = int(debt.get("total_installments", 1)) - int(debt.get("paid_installments", 0))
+            cells = [
+                debt.get("name", ""),
+                debt.get("institution", ""),
+                _DEBT_TYPE_DISPLAY.get(debt.get("debt_type", ""), debt.get("debt_type", "")),
+                _fmt_brl(float(debt.get("remaining_amount", 0))),
+                _fmt_brl(float(debt.get("installment_amount", 0))),
+                f"{float(debt.get('interest_rate', 0)):.2f}% a.m.",
+                str(remaining),
+            ]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setForeground(QColor("#E8EAED" if col in (0, 1) else "#8B90A7"))
+                if col in (_DEBT_COL_REMAINING, _DEBT_COL_INSTALLMENT):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._debt_table.setItem(row, col, item)
+
+            # Ações: editar + excluir
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            actions_layout.setSpacing(4)
+
+            edit_btn = QPushButton("✏")
+            edit_btn.setFixedWidth(28)
+            edit_btn.setToolTip("Editar dívida")
+            edit_btn.clicked.connect(lambda _, d=debt: self._open_edit_debt_dialog(d))
+
+            del_btn = QPushButton("✕")
+            del_btn.setFixedWidth(28)
+            del_btn.setToolTip("Excluir dívida")
+            del_btn.setStyleSheet("QPushButton { color: #FF6B6B; }")
+            del_btn.clicked.connect(lambda _, d=debt: self._delete_debt(d))
+
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(del_btn)
+            self._debt_table.setCellWidget(row, _DEBT_COL_ACTIONS, actions_widget)
+
+    # ------------------------------------------------------------------
+    # Diálogos de dívidas
+    # ------------------------------------------------------------------
+
+    def _open_new_debt_dialog(self) -> None:
+        dialog = NewDebtDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_payload()
+        if self._save_debt_worker and self._save_debt_worker.isRunning():
+            return
+        self._save_debt_worker = SaveDebtWorker(self._client, payload)
+        self._save_debt_worker.saved.connect(lambda _: self._load_debts())
+        self._save_debt_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao salvar dívida", msg)
+        )
+        self._save_debt_worker.start()
+
+    def _open_edit_debt_dialog(self, debt: dict) -> None:
+        dialog = NewDebtDialog(debt=debt, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_update_payload()
+        if self._update_debt_worker and self._update_debt_worker.isRunning():
+            return
+        self._update_debt_worker = UpdateDebtWorker(self._client, debt["id"], payload)
+        self._update_debt_worker.updated.connect(lambda _: self._load_debts())
+        self._update_debt_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao atualizar dívida", msg)
+        )
+        self._update_debt_worker.start()
+
+    def _delete_debt(self, debt: dict) -> None:
+        resp = QMessageBox.question(
+            self,
+            "Confirmar exclusão",
+            f"Deseja excluir a dívida «{debt.get('name', '')}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+        if self._delete_debt_worker and self._delete_debt_worker.isRunning():
+            return
+        self._delete_debt_worker = DeleteDebtWorker(self._client, debt["id"])
+        self._delete_debt_worker.done.connect(self._load_debts)
+        self._delete_debt_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao excluir dívida", msg)
+        )
+        self._delete_debt_worker.start()
 
 
 # ======================================================================

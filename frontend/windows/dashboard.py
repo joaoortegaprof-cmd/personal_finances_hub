@@ -46,10 +46,13 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QProgressBar,
     QScrollArea,
     QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
     QPushButton,
@@ -419,6 +422,7 @@ class DonutCanvas(FigureCanvas):
         self._fig = Figure(figsize=figsize, facecolor=_BG_RGB)
         super().__init__(self._fig)
         self.setParent(parent)
+        self.setStyleSheet("background: transparent;")
         self.setMinimumHeight(195)
         self.setMaximumHeight(220)
         self._ax     = self._fig.add_subplot(111)
@@ -457,12 +461,14 @@ class DonutCanvas(FigureCanvas):
             "", xy=(0, 0),
             xytext=(0.05, -0.12),
             textcoords="axes fraction",
-            fontsize=8,
-            color=_TEXT_RGB,
+            fontsize=11,
+            color=(1.0, 1.0, 1.0),
             ha="center",
             bbox=dict(boxstyle="round,pad=0.3", fc=_GRID_RGB, ec="none", alpha=0.9),
             visible=False,
+            zorder=999,
         )
+        self._annot.set_zorder(999)
 
         self._fig.tight_layout(pad=0.2)
         self.draw()
@@ -478,12 +484,13 @@ class DonutCanvas(FigureCanvas):
                     f"{self._labels[i]}\n"
                     f"{_fmt_brl(self._values[i])}  ({pct:.1f}%)"
                 )
+                self._annot.set_zorder(999)
                 self._annot.set_visible(True)
-                self.draw_idle()
+                self.figure.canvas.draw_idle()
                 return
         if self._annot.get_visible():
             self._annot.set_visible(False)
-            self.draw_idle()
+            self.figure.canvas.draw_idle()
 
 
 # ======================================================================
@@ -527,12 +534,17 @@ class SummaryCard(QFrame):
 
 class DebtProgressRow(QFrame):
     """
-    Linha de progresso para uma dívida:
-      Nome + instituição | barra colorida (parcelas_pagas/total) | valor pago vs total | taxa%
+    Linha de progresso para uma dívida com cronograma de amortização expansível.
     """
 
-    def __init__(self, debt: dict) -> None:
+    def __init__(self, debt: dict, client: "ApiClient | None" = None) -> None:
         super().__init__()
+        self._debt_id        = debt.get("id")
+        self._client         = client
+        self._schedule_loaded = False
+        self._show_all        = False
+        self._full_schedule: list[dict] = []
+
         self.setObjectName("debtRow")
         self.setStyleSheet(
             f"QFrame#debtRow {{ background: {_GRID}; border-radius: 8px; }}"
@@ -588,9 +600,126 @@ class DebtProgressRow(QFrame):
         )
         footer_lbl.setStyleSheet("color: #8B90A7; font-size: 10px; background: transparent;")
 
+        # Botão "Ver cronograma"
+        self._schedule_btn = QPushButton("Ver cronograma ▾")
+        self._schedule_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #4A9EFF;
+                border: none;
+                font-size: 11px;
+                text-align: left;
+                padding: 2px 0px;
+            }
+            QPushButton:hover { color: #7BBFFF; }
+        """)
+        self._schedule_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._schedule_btn.clicked.connect(self._toggle_schedule)
+
+        # Contêiner do cronograma (oculto por padrão)
+        self._schedule_container = QWidget()
+        self._schedule_container.setVisible(False)
+        sc_layout = QVBoxLayout(self._schedule_container)
+        sc_layout.setContentsMargins(0, 4, 0, 0)
+        sc_layout.setSpacing(4)
+
+        self._table = QTableWidget()
+        self._table.setColumnCount(6)
+        self._table.setHorizontalHeaderLabels(
+            ["Nº", "Data", "Parcela", "Amortização", "Juros", "Saldo Devedor"]
+        )
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._table.setAlternatingRowColors(True)
+        self._table.setStyleSheet("""
+            QTableWidget {
+                background: #1E2130;
+                alternate-background-color: #252840;
+                color: #FFFFFF;
+                border: none;
+                font-size: 11px;
+                gridline-color: #3A3D50;
+            }
+            QHeaderView::section {
+                background: #2A2D3E;
+                color: #8B90A7;
+                font-size: 10px;
+                border: none;
+                padding: 4px;
+            }
+        """)
+
+        self._show_all_btn = QPushButton("Ver todas as parcelas")
+        self._show_all_btn.setStyleSheet("""
+            QPushButton {
+                background: #2A2D3E;
+                color: #8B90A7;
+                border: none;
+                border-radius: 4px;
+                font-size: 10px;
+                padding: 4px 10px;
+            }
+            QPushButton:hover { color: #C8CAD8; background: #353850; }
+        """)
+        self._show_all_btn.clicked.connect(self._toggle_show_all)
+        self._show_all_btn.setVisible(False)
+
+        sc_layout.addWidget(self._table)
+        sc_layout.addWidget(self._show_all_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
         layout.addLayout(header)
         layout.addWidget(bar)
         layout.addWidget(footer_lbl)
+        layout.addWidget(self._schedule_btn)
+        layout.addWidget(self._schedule_container)
+
+    def _toggle_schedule(self) -> None:
+        visible = not self._schedule_container.isVisible()
+        if visible and not self._schedule_loaded:
+            self._load_schedule()
+        self._schedule_container.setVisible(visible)
+        self._schedule_btn.setText("Ver cronograma ▴" if visible else "Ver cronograma ▾")
+
+    def _load_schedule(self) -> None:
+        if not self._client or not self._debt_id:
+            return
+        try:
+            data = self._client.get_debt_schedule(self._debt_id)
+            self._full_schedule = data.get("schedule", [])
+            self._populate_table(self._full_schedule[:12])
+            self._show_all_btn.setVisible(len(self._full_schedule) > 12)
+            self._schedule_loaded = True
+        except Exception:
+            pass
+
+    def _toggle_show_all(self) -> None:
+        self._show_all = not self._show_all
+        if self._show_all:
+            self._populate_table(self._full_schedule)
+            self._show_all_btn.setText("Mostrar menos")
+        else:
+            self._populate_table(self._full_schedule[:12])
+            self._show_all_btn.setText("Ver todas as parcelas")
+
+    def _populate_table(self, rows: list[dict]) -> None:
+        self._table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            cells = [
+                str(row.get("installment_number", "")),
+                str(row.get("due_date", ""))[:10],
+                _fmt_brl(float(row.get("installment_amount", 0))),
+                _fmt_brl(float(row.get("principal", 0))),
+                _fmt_brl(float(row.get("interest", 0))),
+                _fmt_brl(float(row.get("remaining_balance", 0))),
+            ]
+            for j, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._table.setItem(i, j, item)
+        row_h = 24
+        self._table.setFixedHeight(min(len(rows), 12) * row_h + 30)
 
 
 class AlertRow(QFrame):
@@ -666,9 +795,9 @@ class CategoryDonutWidget(QFrame):
         row.setSpacing(12)
 
         # Donut
-        canvas = DonutCanvas(figsize=(2.2, 1.8))
-        canvas.setMinimumHeight(170)
-        canvas.setMaximumHeight(190)
+        canvas = DonutCanvas(figsize=(2.5, 2.2))
+        canvas.setMinimumHeight(220)
+        canvas.setMaximumHeight(260)
         distribution = [
             {"category": a["ticker"], "value": a["value"], "color": a["color"]}
             for a in assets
@@ -696,12 +825,12 @@ class CategoryDonutWidget(QFrame):
 
             hdr = QHBoxLayout()
             dot_lbl = QLabel("●")
-            dot_lbl.setStyleSheet(f"color: {color}; font-size: 9px; background: transparent;")
-            dot_lbl.setFixedWidth(12)
+            dot_lbl.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
+            dot_lbl.setFixedWidth(14)
             ticker_lbl = QLabel(asset["ticker"])
-            ticker_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 10px; font-weight: 600; background: transparent;")
+            ticker_lbl.setStyleSheet(f"color: #FFFFFF; font-size: 11px; font-weight: 600; background: transparent;")
             val_lbl = QLabel(_fmt_brl(asset["value"]))
-            val_lbl.setStyleSheet("color: #8B90A7; font-size: 9px; background: transparent;")
+            val_lbl.setStyleSheet("color: #E0E2EA; font-size: 11px; background: transparent;")
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             hdr.addWidget(dot_lbl)
             hdr.addWidget(ticker_lbl)
@@ -709,7 +838,7 @@ class CategoryDonutWidget(QFrame):
             hdr.addWidget(val_lbl)
 
             pct_lbl = QLabel(f"{pct:.1f}%")
-            pct_lbl.setStyleSheet("color: #8B90A7; font-size: 9px; background: transparent;")
+            pct_lbl.setStyleSheet("color: #E0E2EA; font-size: 11px; background: transparent;")
             pct_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
 
             item_layout.addLayout(hdr)
@@ -1075,7 +1204,7 @@ class DashboardPage(QWidget):
             return
 
         for debt in debts:
-            self._debts_area.addWidget(DebtProgressRow(debt))
+            self._debts_area.addWidget(DebtProgressRow(debt, client=self._client))
 
     def _populate_alerts(self, alerts: list[dict]) -> None:
         while self._alerts_area.count():

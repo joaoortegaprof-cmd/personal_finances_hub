@@ -379,6 +379,14 @@ class ApiClient:
         """Cadastra uma nova dívida ou financiamento."""
         return self._post("/debts", payload)
 
+    def update_debt(self, debt_id: int, payload: dict[str, Any]) -> dict:
+        """Atualiza campos de uma dívida existente."""
+        return self._put(f"/debts/{debt_id}", payload)
+
+    def delete_debt(self, debt_id: int) -> None:
+        """Desativa (soft delete) uma dívida."""
+        self._delete(f"/debts/{debt_id}")
+
     def get_debt_schedule(self, debt_id: int) -> dict:
         """Retorna o cronograma de amortização completo de uma dívida."""
         return self._get(f"/debts/{debt_id}/schedule")
