@@ -19,10 +19,18 @@ Ao clicar em uma linha → FundamentalsDialog com posição + indicadores fundam
 
 from __future__ import annotations
 
+import matplotlib
+matplotlib.use("qtagg")  # noqa: E402
+
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -393,6 +401,290 @@ class FundamentalsDialog(QDialog):
 
 
 # ======================================================================
+# Worker e Canvas de benchmark
+# ======================================================================
+
+class BenchmarkWorker(QThread):
+    """Busca dados de comparação com benchmarks para um ticker."""
+    data_ready = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, ticker: str, period: str) -> None:
+        super().__init__()
+        self._client = client
+        self._ticker = ticker
+        self._period = period
+
+    def run(self) -> None:
+        try:
+            data = self._client.get_benchmark_comparison(self._ticker, self._period)
+            self.data_ready.emit(data)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class BenchmarkLineCanvas(FigureCanvasQTAgg):
+    """Linhas normalizadas base 100: ativo, CDI, IBOV, IPCA."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        fig = Figure(figsize=(8, 3.2), facecolor="#1A1D2E")
+        self.axes = fig.add_subplot(111)
+        super().__init__(fig)
+        self._style_axes()
+
+    def _style_axes(self) -> None:
+        ax = self.axes
+        ax.set_facecolor("#1A1D2E")
+        ax.tick_params(colors="#8B90A7", labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color("#2A2D3E")
+        ax.axhline(y=100, color="#2A2D3E", linewidth=0.8, linestyle="--")
+
+    def plot(self, chart_data: list[dict], ticker: str) -> None:
+        self.axes.cla()
+        self._style_axes()
+        if not chart_data:
+            self.draw()
+            return
+
+        dates = [p["date"] for p in chart_data]
+        asset  = [float(p["asset"])  if p["asset"]  is not None else None for p in chart_data]
+        cdi    = [float(p["cdi"])    if p["cdi"]    is not None else None for p in chart_data]
+        ibov   = [float(p["ibov"])   if p["ibov"]   is not None else None for p in chart_data]
+        ipca   = [float(p["ipca"])   if p["ipca"]   is not None else None for p in chart_data]
+
+        import datetime
+
+        def _x(dates_list):
+            return [d if isinstance(d, datetime.date) else datetime.date.fromisoformat(d) for d in dates_list]
+
+        x = _x(dates)
+
+        # Filtra Nones para cada série
+        def _plot_series(values, color, label, lw=1.5, alpha=1.0):
+            xs = [x[i] for i, v in enumerate(values) if v is not None]
+            ys = [v for v in values if v is not None]
+            if xs:
+                self.axes.plot(xs, ys, color=color, linewidth=lw, label=label, alpha=alpha)
+
+        _plot_series(asset, "#4A9EFF", ticker, lw=2.0)
+        _plot_series(cdi,   "#00C896", "CDI",  lw=1.5, alpha=0.85)
+        _plot_series(ibov,  "#FFB347", "IBOV", lw=1.5, alpha=0.85)
+        _plot_series(ipca,  "#8B90A7", "IPCA", lw=1.2, alpha=0.7)
+
+        self.axes.legend(
+            loc="upper left", fontsize=8,
+            facecolor="#1A1D2E", edgecolor="#2A2D3E",
+            labelcolor="#E8EAED",
+        )
+        self.axes.set_ylabel("Base 100", color="#8B90A7", fontsize=8)
+        self.axes.yaxis.set_tick_params(labelcolor="#8B90A7")
+
+        # Formata eixo X com apenas alguns rótulos para não poluir
+        import matplotlib.dates as mdates
+        self.axes.xaxis.set_major_formatter(mdates.DateFormatter("%b/%y"))
+        self.axes.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+        self.figure.autofmt_xdate(rotation=30, ha="right")
+
+        self.figure.tight_layout()
+        self.draw()
+
+
+class BenchmarkDialog(QDialog):
+    """
+    Dialog de comparação de um ativo com CDI, IBOV e IPCA.
+
+    Permite trocar o período com botões 1M | 3M | 6M | 1A | 3A
+    e exibe o alpha vs CDI e IBOV em destaque.
+    """
+
+    _PERIODS = [("1M", "1m"), ("3M", "3m"), ("6M", "6m"), ("1A", "1y"), ("3A", "3y")]
+
+    def __init__(self, entry: dict, client: ApiClient, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._entry = entry
+        self._client = client
+        self._ticker = entry.get("ticker", "")
+        self._period = "1y"
+        self._worker: BenchmarkWorker | None = None
+
+        self.setWindowTitle(f"Rentabilidade — {self._ticker}")
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(500)
+        self.setModal(True)
+        self._build_ui()
+        self._load()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
+
+        # Título
+        title = QLabel(f"Rentabilidade — {self._ticker}")
+        title.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {_C_WHITE};")
+        root.addWidget(title)
+
+        # Seletor de período
+        period_row = QHBoxLayout()
+        period_row.addWidget(QLabel("Período:"))
+        self._period_btns: list[QPushButton] = []
+        for label, value in self._PERIODS:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedWidth(46)
+            btn.setChecked(value == self._period)
+            btn.clicked.connect(lambda _, v=value: self._on_period_changed(v))
+            period_row.addWidget(btn)
+            self._period_btns.append(btn)
+        period_row.addStretch()
+        root.addLayout(period_row)
+
+        # Carregamento
+        self._loading_lbl = QLabel("Carregando dados…")
+        self._loading_lbl.setObjectName("loadingLabel")
+        self._loading_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self._loading_lbl)
+
+        # Cards de retorno
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(12)
+        self._card_asset = _BenchmarkCard(self._ticker, "#4A9EFF")
+        self._card_cdi   = _BenchmarkCard("CDI",  "#00C896")
+        self._card_ibov  = _BenchmarkCard("IBOV", "#FFB347")
+        self._card_ipca  = _BenchmarkCard("IPCA", "#8B90A7")
+        for card in [self._card_asset, self._card_cdi, self._card_ibov, self._card_ipca]:
+            card.setVisible(False)
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            cards_row.addWidget(card)
+        root.addLayout(cards_row)
+
+        # Alpha em destaque
+        self._alpha_row = QHBoxLayout()
+        self._alpha_cdi_lbl = QLabel("")
+        self._alpha_cdi_lbl.setStyleSheet("font-size: 13px; font-weight: 700;")
+        self._alpha_ibov_lbl = QLabel("")
+        self._alpha_ibov_lbl.setStyleSheet("font-size: 13px; font-weight: 700;")
+        self._alpha_row.addWidget(self._alpha_cdi_lbl)
+        self._alpha_row.addWidget(QLabel("   "))
+        self._alpha_row.addWidget(self._alpha_ibov_lbl)
+        self._alpha_row.addStretch()
+        alpha_widget = QWidget()
+        alpha_widget.setLayout(self._alpha_row)
+        alpha_widget.setVisible(False)
+        self._alpha_widget = alpha_widget
+        root.addWidget(alpha_widget)
+
+        # Gráfico
+        self._canvas = BenchmarkLineCanvas()
+        self._canvas.setVisible(False)
+        root.addWidget(self._canvas)
+
+        # Fechar
+        btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn.rejected.connect(self.reject)
+        root.addWidget(btn)
+
+    def _on_period_changed(self, period: str) -> None:
+        self._period = period
+        for btn, (_, v) in zip(self._period_btns, self._PERIODS):
+            btn.setChecked(v == period)
+        self._load()
+
+    def _load(self) -> None:
+        if self._worker and self._worker.isRunning():
+            self._worker.quit()
+            self._worker.wait(500)
+
+        self._loading_lbl.setVisible(True)
+        for card in [self._card_asset, self._card_cdi, self._card_ibov, self._card_ipca]:
+            card.setVisible(False)
+        self._alpha_widget.setVisible(False)
+        self._canvas.setVisible(False)
+
+        self._worker = BenchmarkWorker(self._client, self._ticker, self._period)
+        self._worker.data_ready.connect(self._on_data)
+        self._worker.error_occurred.connect(self._on_error)
+        self._worker.start()
+
+    def _on_data(self, data: dict) -> None:
+        self._loading_lbl.setVisible(False)
+
+        asset_ret = float(data.get("asset_return", 0))
+        cdi_ret   = float(data.get("cdi_return", 0))
+        ibov_ret  = float(data.get("ibov_return", 0))
+        ipca_ret  = float(data.get("ipca_return", 0))
+        alpha_cdi  = float(data.get("alpha_cdi", 0))
+        alpha_ibov = float(data.get("alpha_ibov", 0))
+
+        def _fmt_ret(v: float) -> str:
+            sign = "+" if v >= 0 else ""
+            return f"{sign}{v:.2f}%"
+
+        self._card_asset.set_value(_fmt_ret(asset_ret))
+        self._card_cdi.set_value(_fmt_ret(cdi_ret))
+        self._card_ibov.set_value(_fmt_ret(ibov_ret))
+        self._card_ipca.set_value(_fmt_ret(ipca_ret))
+
+        for card in [self._card_asset, self._card_cdi, self._card_ibov, self._card_ipca]:
+            card.setVisible(True)
+
+        # Alpha
+        def _alpha_style(v: float) -> str:
+            return _C_POS if v >= 0 else _C_NEG
+
+        sign_cdi  = "+" if alpha_cdi  >= 0 else ""
+        sign_ibov = "+" if alpha_ibov >= 0 else ""
+        self._alpha_cdi_lbl.setText(f"{sign_cdi}{alpha_cdi:.2f}% vs CDI")
+        self._alpha_cdi_lbl.setStyleSheet(
+            f"font-size: 13px; font-weight: 700; color: {_alpha_style(alpha_cdi)};"
+        )
+        self._alpha_ibov_lbl.setText(f"{sign_ibov}{alpha_ibov:.2f}% vs IBOV")
+        self._alpha_ibov_lbl.setStyleSheet(
+            f"font-size: 13px; font-weight: 700; color: {_alpha_style(alpha_ibov)};"
+        )
+        self._alpha_widget.setVisible(True)
+
+        # Gráfico
+        chart_data = data.get("chart_data", [])
+        self._canvas.plot(chart_data, self._ticker)
+        self._canvas.setVisible(True)
+
+    def _on_error(self, msg: str) -> None:
+        self._loading_lbl.setText(f"Erro: {msg}")
+
+    def closeEvent(self, event) -> None:
+        if self._worker and self._worker.isRunning():
+            self._worker.quit()
+            self._worker.wait(1000)
+        super().closeEvent(event)
+
+
+class _BenchmarkCard(QFrame):
+    """Mini card para mostrar retorno de um ativo/benchmark."""
+
+    def __init__(self, title: str, color: str) -> None:
+        super().__init__()
+        self.setObjectName("summaryCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 12)
+        layout.setSpacing(4)
+
+        lbl = QLabel(title)
+        lbl.setStyleSheet(f"color: {_C_MUTED}; font-size: 11px;")
+        layout.addWidget(lbl)
+
+        self._val = QLabel("—")
+        self._val.setStyleSheet(f"color: {color}; font-size: 18px; font-weight: 700;")
+        layout.addWidget(self._val)
+
+    def set_value(self, text: str) -> None:
+        self._val.setText(text)
+
+
+# ======================================================================
 # Página principal
 # ======================================================================
 
@@ -673,7 +965,14 @@ class MarketPage(QWidget):
         entry = first.data(Qt.ItemDataRole.UserRole)
         if entry is None:
             return
-        dlg = FundamentalsDialog(entry, self._client, parent=self)
+
+        # Para ativos com ticker e de renda variável → abre benchmark comparison
+        ticker = entry.get("ticker")
+        is_fixed = entry.get("asset_type") in _FIXED_TYPES
+        if ticker and not is_fixed:
+            dlg = BenchmarkDialog(entry, self._client, parent=self)
+        else:
+            dlg = FundamentalsDialog(entry, self._client, parent=self)
         dlg.exec()
 
     def _on_error(self, msg: str) -> None:

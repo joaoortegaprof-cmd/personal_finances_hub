@@ -39,6 +39,7 @@ from frontend.windows.investments import InvestmentsPage
 from frontend.windows.market import MarketPage
 from frontend.windows.reports import ReportsPage
 from frontend.windows.settings_page import SettingsPage
+from frontend.windows.tax import TaxPage
 from frontend.windows.transactions import TransactionsPage
 
 # Caminho do tema QSS relativo a este arquivo
@@ -53,7 +54,8 @@ _NAV_ITEMS: list[tuple[str, int]] = [
     ("Investimentos",4),
     ("Mercado",      5),
     ("Relatórios",   6),
-    ("Configurações",7),
+    ("IR e DARF",    7),
+    ("Configurações",8),
 ]
 
 
@@ -237,7 +239,11 @@ class MainWindow(QMainWindow):
         self._reports_page = ReportsPage()
         stack.addWidget(self._reports_page)
 
-        # 7 — Configurações e Metas
+        # 7 — IR e DARF
+        self._tax_page = TaxPage()
+        stack.addWidget(self._tax_page)
+
+        # 8 — Configurações e Metas
         self._settings_page = SettingsPage()
         stack.addWidget(self._settings_page)
 

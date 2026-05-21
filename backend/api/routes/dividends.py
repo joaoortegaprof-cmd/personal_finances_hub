@@ -1,0 +1,149 @@
+"""
+Endpoints de histórico de proventos recebidos.
+
+Rotas:
+    GET  /dividends              — lista com filtro de período
+    POST /dividends              — registrar provento recebido
+    GET  /dividends/summary      — resumo por ativo e por mês
+"""
+
+from collections import defaultdict
+from datetime import date, timedelta
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.api.schemas.dividends import DividendCreate, DividendOut, DividendSummaryOut
+from backend.core.database import get_db
+from backend.models.asset import Asset
+from backend.models.dividend import Dividend
+
+router = APIRouter(prefix="/dividends", tags=["Proventos"])
+
+
+def _to_out(d: Dividend) -> DividendOut:
+    ticker = None
+    asset_name = None
+    if d.asset is not None:
+        ticker = d.asset.ticker
+        asset_name = d.asset.name
+    return DividendOut(
+        id=d.id,
+        asset_id=d.asset_id,
+        ticker=ticker,
+        asset_name=asset_name,
+        payment_date=d.payment_date,
+        record_date=d.record_date,
+        amount_per_unit=d.amount_per_unit,
+        total_amount=d.total_amount,
+        dividend_type=d.dividend_type,
+        is_taxable=d.is_taxable,
+        tax_withheld=d.tax_withheld,
+        created_at=d.created_at,
+    )
+
+
+@router.get("/summary", response_model=DividendSummaryOut)
+async def get_dividends_summary(
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Resumo de proventos recebidos no período (padrão: últimos 12 meses).
+
+    Retorna total, distribuição por ativo, série mensal e média mensal.
+    """
+    if end_date is None:
+        end_date = date.today()
+    if start_date is None:
+        start_date = end_date - timedelta(days=365)
+
+    stmt = (
+        select(Dividend)
+        .where(Dividend.payment_date >= start_date)
+        .where(Dividend.payment_date <= end_date)
+        .order_by(Dividend.payment_date)
+    )
+    result = await db.execute(stmt)
+    dividends = result.scalars().all()
+
+    total_received = Decimal("0")
+    by_asset: dict[str, Decimal] = defaultdict(Decimal)
+    by_month: dict[str, Decimal] = defaultdict(Decimal)
+
+    for d in dividends:
+        total_received += d.total_amount
+        ticker = (d.asset.ticker if d.asset and d.asset.ticker else str(d.asset_id))
+        by_asset[ticker] += d.total_amount
+        month_key = d.payment_date.strftime("%Y-%m")
+        by_month[month_key] += d.total_amount
+
+    # Preenche meses sem provento com zero para os últimos 12 meses
+    full_months: dict[str, Decimal] = {}
+    cursor = start_date.replace(day=1)
+    end_month = end_date.replace(day=1)
+    while cursor <= end_month:
+        key = cursor.strftime("%Y-%m")
+        full_months[key] = by_month.get(key, Decimal("0"))
+        # Avança para o próximo mês
+        if cursor.month == 12:
+            cursor = cursor.replace(year=cursor.year + 1, month=1)
+        else:
+            cursor = cursor.replace(month=cursor.month + 1)
+
+    n_months = len(full_months) or 1
+    average_monthly = (total_received / n_months).quantize(Decimal("0.01"))
+
+    biggest_ticker = max(by_asset, key=lambda k: by_asset[k]) if by_asset else None
+    biggest_total = by_asset[biggest_ticker] if biggest_ticker else None
+
+    return DividendSummaryOut(
+        total_received=total_received,
+        by_asset=dict(sorted(by_asset.items(), key=lambda x: x[1], reverse=True)),
+        by_month=full_months,
+        average_monthly=average_monthly,
+        biggest_payer_ticker=biggest_ticker,
+        biggest_payer_total=biggest_total,
+    )
+
+
+@router.get("", response_model=list[DividendOut])
+async def list_dividends(
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lista proventos registrados, opcionalmente filtrados por período."""
+    stmt = select(Dividend).order_by(Dividend.payment_date.desc())
+    if start_date:
+        stmt = stmt.where(Dividend.payment_date >= start_date)
+    if end_date:
+        stmt = stmt.where(Dividend.payment_date <= end_date)
+
+    result = await db.execute(stmt)
+    return [_to_out(d) for d in result.scalars().all()]
+
+
+@router.post("", response_model=DividendOut, status_code=status.HTTP_201_CREATED)
+async def create_dividend(
+    payload: DividendCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Registra um provento recebido."""
+    # Verifica se o ativo existe
+    asset_result = await db.execute(select(Asset).where(Asset.id == payload.asset_id))
+    asset = asset_result.scalar_one_or_none()
+    if asset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Ativo {payload.asset_id} não encontrado.",
+        )
+
+    dividend = Dividend(**payload.model_dump())
+    db.add(dividend)
+    await db.flush()
+    await db.refresh(dividend)
+    return _to_out(dividend)

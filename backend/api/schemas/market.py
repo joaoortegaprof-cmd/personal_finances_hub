@@ -38,3 +38,25 @@ class FundamentalsOut(BaseModel):
     net_margin: Decimal | None      # Margem Líquida % (já multiplicado por 100)
     ev_ebitda: Decimal | None       # EV/EBITDA
     fetched_at: datetime
+
+
+class NormalizedPoint(BaseModel):
+    date: date
+    asset: Decimal | None
+    cdi: Decimal | None
+    ibov: Decimal | None
+    ipca: Decimal | None
+
+
+class BenchmarkComparisonOut(BaseModel):
+    ticker: str
+    period: str
+    period_start: date
+    period_end: date
+    asset_return: Decimal
+    cdi_return: Decimal
+    ibov_return: Decimal
+    ipca_return: Decimal
+    alpha_cdi: Decimal
+    alpha_ibov: Decimal
+    chart_data: list[NormalizedPoint]

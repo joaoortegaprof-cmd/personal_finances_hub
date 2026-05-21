@@ -9,11 +9,19 @@ Rotas:
 """
 
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from backend.api.schemas.market import FundamentalsOut, PriceHistoryOut, PricePointOut, QuoteOut
+from backend.api.schemas.market import (
+    BenchmarkComparisonOut,
+    FundamentalsOut,
+    NormalizedPoint,
+    PriceHistoryOut,
+    PricePointOut,
+    QuoteOut,
+)
 from backend.services.market_data_service import MarketDataService
 
 router = APIRouter(prefix="/market", tags=["Mercado"])
@@ -128,4 +136,128 @@ async def get_fundamentals(ticker: str):
         net_margin=data.get("net_margin"),
         ev_ebitda=data.get("ev_ebitda"),
         fetched_at=data["fetched_at"],
+    )
+
+
+# Mapeamento de período → dias de lookback (reusa _PERIOD_DAYS + 3y)
+_BENCHMARK_PERIOD_DAYS: dict[str, int] = {
+    "1m": 30,
+    "3m": 90,
+    "6m": 180,
+    "1y": 365,
+    "3y": 1095,
+}
+
+
+@router.get("/benchmark-comparison", response_model=BenchmarkComparisonOut)
+async def get_benchmark_comparison(
+    ticker: Annotated[str, Query(description="Ticker do ativo (ex: PETR4)")],
+    period: Annotated[
+        Literal["1m", "3m", "6m", "1y", "3y"],
+        Query(description="Período: 1m, 3m, 6m, 1y, 3y"),
+    ] = "1y",
+):
+    """
+    Compara o retorno de um ativo com CDI, IBOVESPA e IPCA no período.
+
+    Retorna retornos percentuais simples e série histórica normalizada em base 100
+    para plotar todas as linhas no mesmo gráfico de comparação.
+    """
+    days = _BENCHMARK_PERIOD_DAYS[period]
+    start_date = date.today() - timedelta(days=days)
+    end_date = date.today()
+    yf_ticker = _market_service.to_yfinance_ticker(ticker.upper())
+
+    # Busca histórico do ativo
+    try:
+        asset_hist = await _market_service.get_price_history(yf_ticker, start_date)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Sem dados para '{ticker}': {exc}",
+        )
+
+    if not asset_hist.prices:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Sem histórico de preços para '{ticker}' no período {period}.",
+        )
+
+    # Retorno do ativo
+    def _pct_return(prices: list) -> Decimal:
+        if len(prices) < 2 or prices[0] == 0:
+            return Decimal("0.00")
+        return ((prices[-1] / prices[0] - 1) * 100).quantize(Decimal("0.01"))
+
+    asset_return = _pct_return(asset_hist.prices)
+
+    # Retornos dos benchmarks (falha silenciosa → 0.00)
+    try:
+        ibov_hist = await _market_service.get_price_history("^BVSP", start_date)
+        ibov_return = _pct_return(ibov_hist.prices)
+    except Exception:
+        ibov_hist = None
+        ibov_return = Decimal("0.00")
+
+    try:
+        cdi_return = await _market_service._get_macro_benchmark_return("CDI", start_date, end_date)
+    except Exception:
+        cdi_return = Decimal("0.00")
+
+    try:
+        ipca_return = await _market_service._get_macro_benchmark_return("IPCA", start_date, end_date)
+    except Exception:
+        ipca_return = Decimal("0.00")
+
+    alpha_cdi = (asset_return - cdi_return).quantize(Decimal("0.01"))
+    alpha_ibov = (asset_return - ibov_return).quantize(Decimal("0.01"))
+
+    # Série normalizada em base 100
+    # Para o ativo usamos as datas reais do histórico como eixo X
+    asset_dates = asset_hist.dates
+    asset_prices = asset_hist.prices
+    base_asset = asset_prices[0] if asset_prices else Decimal("1")
+
+    # Monta lookup {date: normalized_price} para IBOV
+    ibov_map: dict = {}
+    if ibov_hist and ibov_hist.prices:
+        base_ibov = ibov_hist.prices[0]
+        for d, p in zip(ibov_hist.dates, ibov_hist.prices):
+            ibov_map[d] = ((p / base_ibov) * 100).quantize(Decimal("0.01"))
+
+    # CDI e IPCA são retornos acumulados lineares distribuídos pelo período
+    n_days = len(asset_dates)
+    chart_data: list[NormalizedPoint] = []
+    for i, (d, p) in enumerate(zip(asset_dates, asset_prices)):
+        frac = i / max(n_days - 1, 1)
+        asset_norm = ((p / base_asset) * 100).quantize(Decimal("0.01"))
+
+        # Interpolação linear dos benchmarks macro para cada ponto do eixo X
+        cdi_norm = (100 + cdi_return * Decimal(str(frac))).quantize(Decimal("0.01"))
+        ipca_norm = (100 + ipca_return * Decimal(str(frac))).quantize(Decimal("0.01"))
+        ibov_norm = ibov_map.get(d)
+
+        chart_data.append(NormalizedPoint(
+            date=d,
+            asset=asset_norm,
+            cdi=cdi_norm,
+            ibov=ibov_norm,
+            ipca=ipca_norm,
+        ))
+
+    actual_start = asset_dates[0] if asset_dates else start_date
+    actual_end = asset_dates[-1] if asset_dates else end_date
+
+    return BenchmarkComparisonOut(
+        ticker=ticker.upper(),
+        period=period,
+        period_start=actual_start,
+        period_end=actual_end,
+        asset_return=asset_return,
+        cdi_return=cdi_return,
+        ibov_return=ibov_return,
+        ipca_return=ipca_return,
+        alpha_cdi=alpha_cdi,
+        alpha_ibov=alpha_ibov,
+        chart_data=chart_data,
     )

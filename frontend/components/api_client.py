@@ -415,6 +415,67 @@ class ApiClient:
         return self._get("/transactions/emergency-fund")
 
     # ------------------------------------------------------------------
+    # Proventos (dividendos, JCP, rendimentos FII)
+    # ------------------------------------------------------------------
+
+    def get_dividends(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict]:
+        """Lista proventos registrados com filtro opcional de período."""
+        params: dict[str, Any] = {}
+        if start_date:
+            params["start_date"] = start_date.isoformat()
+        if end_date:
+            params["end_date"] = end_date.isoformat()
+        return self._get("/dividends", params=params or None)
+
+    def create_dividend(self, payload: dict[str, Any]) -> dict:
+        """Registra um provento recebido."""
+        return self._post("/dividends", payload)
+
+    def get_dividends_summary(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        """Resumo de proventos: total, por ativo, por mês e média mensal."""
+        params: dict[str, Any] = {}
+        if start_date:
+            params["start_date"] = start_date.isoformat()
+        if end_date:
+            params["end_date"] = end_date.isoformat()
+        return self._get("/dividends/summary", params=params or None)
+
+    # ------------------------------------------------------------------
+    # Comparação com benchmarks
+    # ------------------------------------------------------------------
+
+    def get_benchmark_comparison(self, ticker: str, period: str = "1y") -> dict:
+        """
+        Compara retorno do ativo vs CDI, IBOV e IPCA no período.
+
+        period: "1m" | "3m" | "6m" | "1y" | "3y"
+        """
+        return self._get(
+            "/market/benchmark-comparison",
+            params={"ticker": ticker, "period": period},
+        )
+
+    # ------------------------------------------------------------------
+    # IR e DARF
+    # ------------------------------------------------------------------
+
+    def get_tax_annual_summary(self, year: int) -> dict:
+        """Resumo anual de IR sobre renda variável mês a mês."""
+        return self._get(f"/tax/monthly-summary/{year}")
+
+    def get_darf(self, year: int, month: int) -> dict:
+        """Dados para emissão do DARF de um mês específico."""
+        return self._get(f"/tax/darf/{year}/{month}")
+
+    # ------------------------------------------------------------------
     # Sistema
     # ------------------------------------------------------------------
 

@@ -26,8 +26,14 @@ Nota sobre N+1 de posições:
 
 from __future__ import annotations
 
+import matplotlib
+matplotlib.use("qtagg")  # noqa: E402
+
 from datetime import date
 from typing import Any
+
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 
 from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -853,6 +859,250 @@ class EditAssetDialog(NewAssetDialog):
 # Página principal de Investimentos
 # ======================================================================
 
+# ======================================================================
+# Workers — Proventos
+# ======================================================================
+
+_DIVIDEND_TYPE_LABELS = {
+    "Dividendo": "dividendo",
+    "JCP": "jcp",
+    "Rendimento FII": "rendimento_fii",
+    "Amortização": "amortizacao",
+    "Bonificação": "bonificacao",
+}
+_DIVIDEND_TYPE_DISPLAY = {v: k for k, v in _DIVIDEND_TYPE_LABELS.items()}
+
+
+class DividendWorker(QThread):
+    """Busca lista de proventos e resumo em background."""
+
+    data_ready = pyqtSignal(list, dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            dividends = self._client.get_dividends()
+            summary = self._client.get_dividends_summary()
+            self.data_ready.emit(dividends, summary)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class SaveDividendWorker(QThread):
+    """Executa POST /dividends em background."""
+
+    saved = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, payload: dict[str, Any]) -> None:
+        super().__init__()
+        self._client = client
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            self._client.create_dividend(self._payload)
+            self.saved.emit()
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class NewDividendDialog(QDialog):
+    """Formulário para registrar um provento recebido."""
+
+    def __init__(self, assets: list[dict], client: ApiClient, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Registrar Provento")
+        self.setMinimumWidth(460)
+        self._assets = assets
+        self._client = client
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
+
+        title = QLabel("Registrar Provento")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._asset_combo = QComboBox()
+        self._asset_combo.setMinimumWidth(200)
+        for asset in self._assets:
+            ticker = asset.get("ticker") or ""
+            label = f"{ticker} — {asset['name']}" if ticker else asset["name"]
+            self._asset_combo.addItem(label, userData=asset["id"])
+        self._asset_combo.currentIndexChanged.connect(self._update_total)
+        form.addRow("Ativo *", self._asset_combo)
+
+        self._div_type = QComboBox()
+        for label in _DIVIDEND_TYPE_LABELS:
+            self._div_type.addItem(label)
+        self._div_type.currentTextChanged.connect(self._on_type_changed)
+        form.addRow("Tipo *", self._div_type)
+
+        self._payment_date = QDateEdit()
+        self._payment_date.setCalendarPopup(True)
+        self._payment_date.setDate(QDate.currentDate())
+        self._payment_date.setDisplayFormat("dd/MM/yyyy")
+        form.addRow("Data de Pagamento *", self._payment_date)
+
+        self._record_date = QDateEdit()
+        self._record_date.setCalendarPopup(True)
+        self._record_date.setDate(QDate.currentDate())
+        self._record_date.setDisplayFormat("dd/MM/yyyy")
+        form.addRow("Data Ex (opcional)", self._record_date)
+
+        self._amount_per_unit = QDoubleSpinBox()
+        self._amount_per_unit.setRange(0.0, 999_999.999999)
+        self._amount_per_unit.setDecimals(6)
+        self._amount_per_unit.setPrefix("R$ ")
+        self._amount_per_unit.valueChanged.connect(self._update_total)
+        form.addRow("Valor por Cota/Ação *", self._amount_per_unit)
+
+        self._total_amount = QDoubleSpinBox()
+        self._total_amount.setRange(0.0, 9_999_999.99)
+        self._total_amount.setDecimals(2)
+        self._total_amount.setPrefix("R$ ")
+        form.addRow("Total Recebido *", self._total_amount)
+
+        self._tax_row_label = QLabel("IR Retido na Fonte")
+        self._tax_withheld = QDoubleSpinBox()
+        self._tax_withheld.setRange(0.0, 999_999.99)
+        self._tax_withheld.setDecimals(2)
+        self._tax_withheld.setPrefix("R$ ")
+        form.addRow(self._tax_row_label, self._tax_withheld)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        save_btn = buttons.button(QDialogButtonBox.StandardButton.Save)
+        if save_btn:
+            save_btn.setProperty("class", "success")
+            save_btn.style().unpolish(save_btn)
+            save_btn.style().polish(save_btn)
+        layout.addWidget(buttons)
+
+        self._on_type_changed(self._div_type.currentText())
+
+    def _on_type_changed(self, label: str) -> None:
+        is_jcp = _DIVIDEND_TYPE_LABELS.get(label, "") == "jcp"
+        self._tax_withheld.setEnabled(True)
+        if is_jcp:
+            self._tax_row_label.setText("IR Retido (JCP — 15%)")
+            # Sugere 15% do total como IR retido
+            self._tax_withheld.setValue(self._total_amount.value() * 0.15)
+        else:
+            self._tax_row_label.setText("IR Retido na Fonte")
+
+    def _update_total(self) -> None:
+        # Tenta buscar a posição atual do ativo para sugerir o total
+        # Cálculo aproximado: valor_por_cota × posição_aproximada
+        # Como não temos a posição em mãos aqui, apenas deixa o usuário preencher
+        pass
+
+    def _on_accept(self) -> None:
+        if self._asset_combo.count() == 0:
+            QMessageBox.warning(self, "Sem ativos", "Cadastre um ativo antes.")
+            return
+        if self._total_amount.value() <= 0:
+            QMessageBox.warning(self, "Campo obrigatório", "Informe o total recebido.")
+            return
+        self.accept()
+
+    def get_payload(self) -> dict[str, Any]:
+        qd = self._payment_date.date()
+        payment_date = date(qd.year(), qd.month(), qd.day()).isoformat()
+        qd2 = self._record_date.date()
+        record_date = date(qd2.year(), qd2.month(), qd2.day()).isoformat()
+
+        div_type = _DIVIDEND_TYPE_LABELS[self._div_type.currentText()]
+        is_taxable = div_type == "jcp"
+
+        return {
+            "asset_id": self._asset_combo.currentData(),
+            "payment_date": payment_date,
+            "record_date": record_date,
+            "amount_per_unit": f"{self._amount_per_unit.value():.6f}",
+            "total_amount": f"{self._total_amount.value():.2f}",
+            "dividend_type": div_type,
+            "is_taxable": is_taxable,
+            "tax_withheld": f"{self._tax_withheld.value():.2f}",
+        }
+
+
+# ======================================================================
+# Canvas de gráfico de proventos mensais
+# ======================================================================
+
+
+class DividendsBarCanvas(FigureCanvasQTAgg):
+    """Barras dos proventos mensais dos últimos 12 meses."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        fig = Figure(figsize=(10, 3), facecolor="#1A1D2E")
+        self.axes = fig.add_subplot(111)
+        super().__init__(fig)
+        self._style_axes()
+
+    def _style_axes(self) -> None:
+        ax = self.axes
+        ax.set_facecolor("#1A1D2E")
+        ax.tick_params(colors="#8B90A7", labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color("#2A2D3E")
+
+    def plot(self, by_month: dict[str, float]) -> None:
+        self.axes.cla()
+        self._style_axes()
+        if not by_month:
+            self.draw()
+            return
+
+        labels = list(by_month.keys())
+        values = [float(v) for v in by_month.values()]
+        colors = ["#00C896" if v > 0 else "#8B90A7" for v in values]
+
+        x_pos = range(len(labels))
+        bars = self.axes.bar(x_pos, values, color=colors, width=0.6)
+        self.axes.set_xticks(list(x_pos))
+        short_labels = [lbl[5:] if len(lbl) >= 7 else lbl for lbl in labels]
+        self.axes.set_xticklabels(short_labels, rotation=30, ha="right", fontsize=7)
+        self.axes.set_ylabel("R$", color="#8B90A7", fontsize=8)
+        self.axes.yaxis.set_tick_params(labelcolor="#8B90A7")
+
+        # Anotação de valor em cima de cada barra
+        for bar, val in zip(bars, values):
+            if val > 0:
+                self.axes.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + max(values) * 0.01,
+                    f"R${val:.0f}",
+                    ha="center", va="bottom",
+                    color="#E8EAED", fontsize=6,
+                )
+
+        self.figure.tight_layout()
+        self.draw()
+
+
 # Colunas da tabela de ativos
 _COL_TICKER = 0
 _COL_NAME = 1
@@ -879,6 +1129,8 @@ class InvestmentsPage(QWidget):
         self._worker: InvestmentsWorker | None = None
         self._save_worker: SaveAssetWorker | SaveOperationWorker | None = None
         self._update_worker: UpdateAssetWorker | None = None
+        self._dividend_worker: DividendWorker | None = None
+        self._save_dividend_worker: SaveDividendWorker | None = None
 
         self._raw_assets: list[dict] = []
         self._assets: list[dict] = []
@@ -906,39 +1158,126 @@ class InvestmentsPage(QWidget):
         main.setContentsMargins(32, 24, 32, 32)
         main.setSpacing(20)
 
-        # --- Cards de resumo ---
+        # --- Cards de resumo (sempre visíveis) ---
         main.addLayout(self._build_summary_cards())
 
-        # --- Toolbar de ações ---
-        main.addLayout(self._build_toolbar())
+        # --- QTabWidget: Posições | Proventos ---
+        self._tab_widget = QTabWidget()
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
-        # --- Loading ---
-        self._loading_label = QLabel("Carregando carteira…")
-        self._loading_label.setObjectName("loadingLabel")
-        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main.addWidget(self._loading_label)
+        # Aba 1: Posições na Carteira
+        portfolio_tab = self._build_portfolio_tab()
+        self._tab_widget.addTab(portfolio_tab, "Posições na Carteira")
 
-        # --- Título da tabela ---
-        table_title = QLabel("Posições na Carteira")
-        table_title.setObjectName("sectionTitle")
-        table_title.setVisible(False)
-        self._table_title = table_title
-        main.addWidget(table_title)
+        # Aba 2: Proventos Recebidos
+        dividends_tab = self._build_dividends_tab()
+        self._tab_widget.addTab(dividends_tab, "Proventos Recebidos")
 
-        # --- Tabela de ativos ---
-        self._table = self._build_table()
-        self._table.setVisible(False)
-        main.addWidget(self._table)
-
-        # --- Seção de liquidez ---
-        self._liquidity_section = self._build_liquidity_section()
-        self._liquidity_section.setVisible(False)
-        main.addWidget(self._liquidity_section)
-
+        main.addWidget(self._tab_widget)
         main.addStretch()
 
         scroll.setWidget(content)
         outer.addWidget(scroll)
+
+    def _build_portfolio_tab(self) -> QWidget:
+        """Aba com tabela de posições e breakdown de liquidez."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setSpacing(16)
+
+        # Toolbar de ações
+        layout.addLayout(self._build_toolbar())
+
+        # Loading
+        self._loading_label = QLabel("Carregando carteira…")
+        self._loading_label.setObjectName("loadingLabel")
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._loading_label)
+
+        # Título da tabela
+        table_title = QLabel("Posições na Carteira")
+        table_title.setObjectName("sectionTitle")
+        table_title.setVisible(False)
+        self._table_title = table_title
+        layout.addWidget(table_title)
+
+        # Tabela de ativos
+        self._table = self._build_table()
+        self._table.setVisible(False)
+        layout.addWidget(self._table)
+
+        # Seção de liquidez
+        self._liquidity_section = self._build_liquidity_section()
+        self._liquidity_section.setVisible(False)
+        layout.addWidget(self._liquidity_section)
+
+        layout.addStretch()
+        return tab
+
+    def _build_dividends_tab(self) -> QWidget:
+        """Aba de histórico de proventos recebidos."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setSpacing(16)
+
+        # --- Cards de resumo de proventos ---
+        div_cards_row = QHBoxLayout()
+        div_cards_row.setSpacing(16)
+        self._div_card_total = _SummaryCard("Total Recebido no Ano", "#00C896")
+        self._div_card_avg = _SummaryCard("Média Mensal", "#4A9EFF")
+        self._div_card_top = _SummaryCard("Maior Pagador", "#FFB347")
+        for card in [self._div_card_total, self._div_card_avg, self._div_card_top]:
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            div_cards_row.addWidget(card)
+        layout.addLayout(div_cards_row)
+
+        # --- Toolbar ---
+        div_toolbar = QHBoxLayout()
+        div_toolbar.addStretch()
+        add_div_btn = QPushButton("+ Registrar Provento")
+        add_div_btn.setProperty("class", "primary")
+        add_div_btn.style().unpolish(add_div_btn)
+        add_div_btn.style().polish(add_div_btn)
+        add_div_btn.clicked.connect(self._open_dividend_dialog)
+        div_toolbar.addWidget(add_div_btn)
+        layout.addLayout(div_toolbar)
+
+        # --- Loading de proventos ---
+        self._div_loading = QLabel("Carregando proventos…")
+        self._div_loading.setObjectName("loadingLabel")
+        self._div_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._div_loading)
+
+        # --- Tabela de proventos ---
+        div_headers = ["Data Pgto", "Ativo", "Tipo", "R$/Cota", "Total", "IR Retido"]
+        self._div_table = QTableWidget(0, len(div_headers))
+        self._div_table.setHorizontalHeaderLabels(div_headers)
+        self._div_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._div_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._div_table.setAlternatingRowColors(True)
+        self._div_table.verticalHeader().setVisible(False)
+        div_hdr = self._div_table.horizontalHeader()
+        div_hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        div_hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._div_table.setVisible(False)
+        layout.addWidget(self._div_table)
+
+        # --- Gráfico de barras mensais ---
+        chart_label = QLabel("Proventos Mensais (últimos 12 meses)")
+        chart_label.setObjectName("sectionTitle")
+        chart_label.setVisible(False)
+        self._div_chart_label = chart_label
+        layout.addWidget(chart_label)
+
+        self._div_chart = DividendsBarCanvas()
+        self._div_chart.setVisible(False)
+        self._div_chart.setMinimumHeight(200)
+        layout.addWidget(self._div_chart)
+
+        layout.addStretch()
+        return tab
 
     def _build_summary_cards(self) -> QHBoxLayout:
         """
@@ -1235,6 +1574,94 @@ class InvestmentsPage(QWidget):
             lambda msg: QMessageBox.critical(self, "Erro ao salvar", msg)
         )
         self._save_worker.start()
+
+    # ------------------------------------------------------------------
+    # Proventos
+    # ------------------------------------------------------------------
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 1:
+            self._load_dividends()
+
+    def _load_dividends(self) -> None:
+        if self._dividend_worker and self._dividend_worker.isRunning():
+            return
+
+        self._div_loading.setVisible(True)
+        self._div_table.setVisible(False)
+        self._div_chart.setVisible(False)
+        self._div_chart_label.setVisible(False)
+
+        self._dividend_worker = DividendWorker(self._client)
+        self._dividend_worker.data_ready.connect(self._on_dividends_ready)
+        self._dividend_worker.error_occurred.connect(self._on_div_error)
+        self._dividend_worker.start()
+
+    def _on_dividends_ready(self, dividends: list[dict], summary: dict) -> None:
+        self._div_loading.setVisible(False)
+        self._div_table.setVisible(True)
+        self._div_chart.setVisible(True)
+        self._div_chart_label.setVisible(True)
+
+        # Cards
+        total = float(summary.get("total_received", 0))
+        avg = float(summary.get("average_monthly", 0))
+        top_ticker = summary.get("biggest_payer_ticker") or "—"
+        top_total = float(summary.get("biggest_payer_total") or 0)
+
+        self._div_card_total.set_value(_fmt_brl(total))
+        self._div_card_avg.set_value(_fmt_brl(avg))
+        self._div_card_top.set_value(
+            top_ticker, sub=_fmt_brl(top_total) if top_total else ""
+        )
+
+        # Tabela
+        self._div_table.setRowCount(len(dividends))
+        for row, d in enumerate(dividends):
+            cells = [
+                (d.get("payment_date", ""), "#E8EAED"),
+                (d.get("ticker") or d.get("asset_name") or "—", "#4A9EFF"),
+                (_DIVIDEND_TYPE_DISPLAY.get(d.get("dividend_type", ""), d.get("dividend_type", "")), "#8B90A7"),
+                (_fmt_brl(float(d.get("amount_per_unit", 0))), "#E8EAED"),
+                (_fmt_brl(float(d.get("total_amount", 0))), "#00C896"),
+                (_fmt_brl(float(d.get("tax_withheld", 0))), "#FFB347" if float(d.get("tax_withheld", 0)) > 0 else "#8B90A7"),
+            ]
+            for col, (text, color) in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setForeground(QColor(color))
+                if col in (3, 4, 5):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._div_table.setItem(row, col, item)
+
+        # Gráfico
+        by_month = summary.get("by_month", {})
+        self._div_chart.plot({k: float(v) for k, v in by_month.items()})
+
+    def _on_div_error(self, message: str) -> None:
+        self._div_loading.setText(f"Erro ao carregar proventos: {message}")
+
+    def _open_dividend_dialog(self) -> None:
+        if not self._raw_assets:
+            QMessageBox.information(
+                self,
+                "Sem ativos",
+                "Cadastre pelo menos um ativo antes de registrar um provento.",
+            )
+            return
+
+        dialog = NewDividendDialog(self._raw_assets, self._client, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        payload = dialog.get_payload()
+        if self._save_dividend_worker and self._save_dividend_worker.isRunning():
+            return
+        self._save_dividend_worker = SaveDividendWorker(self._client, payload)
+        self._save_dividend_worker.saved.connect(self._load_dividends)
+        self._save_dividend_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao salvar provento", msg)
+        )
+        self._save_dividend_worker.start()
 
 
 # ======================================================================
