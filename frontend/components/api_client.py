@@ -368,6 +368,33 @@ class ApiClient:
         return self._get(f"/market/fundamentals/{ticker}")
 
     # ------------------------------------------------------------------
+    # Dívidas
+    # ------------------------------------------------------------------
+
+    def get_debts(self) -> list[dict]:
+        """Lista todas as dívidas ativas."""
+        return self._get("/debts")
+
+    def create_debt(self, payload: dict[str, Any]) -> dict:
+        """Cadastra uma nova dívida ou financiamento."""
+        return self._post("/debts", payload)
+
+    def get_debt_schedule(self, debt_id: int) -> dict:
+        """Retorna o cronograma de amortização completo de uma dívida."""
+        return self._get(f"/debts/{debt_id}/schedule")
+
+    # ------------------------------------------------------------------
+    # Reserva de emergência
+    # ------------------------------------------------------------------
+
+    def get_emergency_fund(self) -> dict:
+        """
+        Retorna o status da reserva de emergência:
+          saldo_total, media_gastos_6m, meses_cobertos.
+        """
+        return self._get("/transactions/emergency-fund")
+
+    # ------------------------------------------------------------------
     # Sistema
     # ------------------------------------------------------------------
 

@@ -22,6 +22,7 @@ class TransactionCreate(BaseModel):
     notes: str | None = None
     tags: str | None = Field(default=None, max_length=500)
     is_recurring: bool = False
+    is_emergency_fund: bool = False
 
 
 class TransactionUpdate(BaseModel):
@@ -36,6 +37,7 @@ class TransactionUpdate(BaseModel):
     notes: str | None = None
     tags: str | None = Field(default=None, max_length=500)
     is_recurring: bool | None = None
+    is_emergency_fund: bool | None = None
 
 
 class TransactionOut(BaseModel):
@@ -53,6 +55,7 @@ class TransactionOut(BaseModel):
     notes: str | None
     tags: str | None
     is_recurring: bool
+    is_emergency_fund: bool
     created_at: datetime
     updated_at: datetime
 
@@ -63,3 +66,9 @@ class MonthlySummaryOut(BaseModel):
     balance: Decimal
     savings_rate: Decimal
     reference_month: str  # "MM/AAAA"
+
+
+class EmergencyFundOut(BaseModel):
+    saldo_total: Decimal         # soma de lançamentos is_emergency_fund=True
+    media_gastos_6m: Decimal     # média mensal de despesas dos últimos 6 meses
+    meses_cobertos: Decimal      # saldo_total / media_gastos_6m

@@ -14,6 +14,7 @@ Fluxo de vida de uma requisição:
 
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -127,3 +128,19 @@ async def init_db() -> None:
         # contexto assíncrono — necessário pois a API de metadata
         # do SQLAlchemy ainda é síncrona.
         await conn.run_sync(Base.metadata.create_all)
+
+        # Migração incremental: adiciona is_emergency_fund à tabela
+        # transactions se a coluna ainda não existir (banco pré-existente).
+        result = await conn.execute(
+            text(
+                "SELECT COUNT(*) FROM pragma_table_info('transactions') "
+                "WHERE name='is_emergency_fund'"
+            )
+        )
+        if result.scalar() == 0:
+            await conn.execute(
+                text(
+                    "ALTER TABLE transactions "
+                    "ADD COLUMN is_emergency_fund BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )

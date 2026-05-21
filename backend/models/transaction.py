@@ -189,6 +189,15 @@ class Transaction(Base):
         server_default="0",  # SQLite representa False como 0
     )
 
+    # Marca lançamentos que compõem a reserva de emergência.
+    # Permite calcular o saldo reservado sem criar uma conta separada.
+    is_emergency_fund: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
+
     # -----------------------------------------------------------------
     # Auditoria
     # -----------------------------------------------------------------

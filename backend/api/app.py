@@ -24,6 +24,7 @@ from backend.api.routes.accounts import router as accounts_router
 from backend.api.routes.assets import assets_router, portfolio_router
 from backend.api.routes.cards import router as cards_router
 from backend.api.routes.dashboard import router as dashboard_router
+from backend.api.routes.debts import router as debts_router
 from backend.api.routes.market import router as market_router
 from backend.api.routes.transactions import router as transactions_router
 from backend.core.config import settings
@@ -86,6 +87,7 @@ app.include_router(assets_router)
 app.include_router(portfolio_router)
 app.include_router(dashboard_router)
 app.include_router(market_router)
+app.include_router(debts_router)
 
 
 # -----------------------------------------------------------------

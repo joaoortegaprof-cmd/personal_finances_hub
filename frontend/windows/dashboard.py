@@ -2,21 +2,27 @@
 Página do Dashboard — visão geral do patrimônio e alertas ativos.
 
 Layout:
-  ┌───────────────────────────────────────────────────────┐
-  │  [Patrimônio]  [Receitas]  [Despesas]  [Score Saúde]  │  ← cards de resumo
-  ├───────────────────────────────────────────────────────┤
-  │  ████████████ Gráfico de barras mensais ████████████  │  ← 280px, largura total
-  ├──────────────────────────┬────────────────────────────┤
-  │  Linha 10 anos (45%)     │  Donut + legenda top-5     │  ← 200px cada
-  └──────────────────────────┴────────────────────────────┘
-  │  Alertas Ativos                                       │
-  └───────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  [Patrim D+0]  [Patrim Total]  [Reserva Emerg]  [Score Saúde]  │  ← Linha 1 (4 cards)
+  ├──────────────────────────────────────────────────────────────────┤
+  │  [Receitas]    [Despesas]      [Saldo do Mês]                   │  ← Linha 2 (3 cards)
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Dívidas e Financiamentos                                        │
+  │  ████████░░░░ Financiamento Carro — Bradesco  1.5%/m            │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  ████████████ Gráfico de barras mensais ████████████            │
+  ├──────────────────────────┬─────────────────────────────────────-┤
+  │  Linha 10 anos (45%)     │  Donut + legenda top-5               │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Distribuição por Categoria                                      │
+  │  [Donut Ações + lista] [Donut FIIs + lista]                     │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Alertas Ativos                                                  │
+  └──────────────────────────────────────────────────────────────────┘
 
 Threading:
-  DashboardWorker        → dashboard + alertas (cards e alertas)
-  PatrimonyHistoryWorker → 10 anos de transações + portfolio + contas
-                           (gráficos de evolução)
-  Ambos são iniciados em paralelo no load_data.
+  DashboardWorker        → dashboard + alerts + emergency_fund + debts
+  PatrimonyHistoryWorker → transactions + portfolio + accounts + asset positions
 
 Gráficos: matplotlib com backend Qt6Agg (sem OpenGL/QWebEngineView).
 """
@@ -27,7 +33,7 @@ from collections import defaultdict
 from datetime import date
 
 import matplotlib
-matplotlib.use("qtagg")  # backend Qt sem OpenGL
+matplotlib.use("qtagg")
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -35,9 +41,10 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -52,7 +59,7 @@ from frontend.components.api_client import ApiClient, ApiError
 
 
 # ======================================================================
-# Constantes visuais — centralizadas para fácil customização
+# Constantes visuais
 # ======================================================================
 
 _BG    = "#1A1D2E"
@@ -71,7 +78,7 @@ _GRID_RGB  = (42/255, 45/255, 62/255)
 
 _CATEGORIES = ["Ações", "FIIs", "ETFs", "Tesouro", "Renda Fixa", "Contas", "Cripto", "Outros"]
 _CAT_COLORS = ["#4A9EFF", "#00C896", "#FFB347", "#A78BFA", "#F59E0B", "#6EE7B7", "#F97316", "#94A3B8"]
-_COLOR_MAP   = dict(zip(_CATEGORIES, _CAT_COLORS))
+_COLOR_MAP  = dict(zip(_CATEGORIES, _CAT_COLORS))
 
 _TYPE_TO_CAT: dict[str, str] = {
     "acao":               "Ações",
@@ -85,6 +92,12 @@ _TYPE_TO_CAT: dict[str, str] = {
     "outros":             "Outros",
 }
 
+# Paleta de cores para ativos individuais dentro de cada donut de categoria
+_ASSET_SLOT_COLORS = [
+    "#4A9EFF", "#00C896", "#FFB347", "#A78BFA", "#F59E0B",
+    "#6EE7B7", "#F97316", "#EC4899", "#34D399", "#FBBF24",
+]
+
 _MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
                "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
@@ -93,17 +106,13 @@ _MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
 # Workers — execução HTTP em background
 # ======================================================================
 
-
 class DashboardWorker(QThread):
     """
-    Busca dados de cards e alertas em thread separada.
-
-    Qt só permite atualizar widgets na thread principal (a que criou o
-    QApplication). Por isso, o worker apenas emite sinais com os dados
-    brutos; os slots na DashboardPage atualizam os widgets.
+    Busca dashboard + alertas + reserva de emergência + dívidas.
+    Emite todos de uma vez para evitar múltiplas atualizações parciais.
     """
 
-    data_ready     = pyqtSignal(dict, dict)
+    data_ready     = pyqtSignal(dict, dict, dict, list)  # dashboard, alerts, ef, debts
     error_occurred = pyqtSignal(str)
 
     def __init__(self, client: ApiClient) -> None:
@@ -114,7 +123,18 @@ class DashboardWorker(QThread):
         try:
             dashboard = self._client.get_dashboard()
             alerts    = self._client.get_alerts()
-            self.data_ready.emit(dashboard, alerts)
+
+            try:
+                emergency_fund = self._client.get_emergency_fund()
+            except ApiError:
+                emergency_fund = {"saldo_total": 0, "media_gastos_6m": 0, "meses_cobertos": 0}
+
+            try:
+                debts = self._client.get_debts()
+            except ApiError:
+                debts = []
+
+            self.data_ready.emit(dashboard, alerts, emergency_fund, debts)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
@@ -123,7 +143,7 @@ class DashboardWorker(QThread):
 
 class PatrimonyHistoryWorker(QThread):
     """
-    Busca e processa dados para os três gráficos de evolução patrimonial.
+    Busca e processa dados para gráficos e donuts de categoria.
     """
 
     patrimony_ready = pyqtSignal(dict)
@@ -139,9 +159,7 @@ class PatrimonyHistoryWorker(QThread):
             ten_years_ago = date(today.year - 10, today.month, today.day)
 
             dashboard  = self._client.get_dashboard()
-            current_nw = float(
-                dashboard.get("net_worth", {}).get("net_worth", 0)
-            )
+            current_nw = float(dashboard.get("net_worth", {}).get("net_worth", 0))
 
             try:
                 transactions = self._client.get_transactions(
@@ -160,10 +178,24 @@ class PatrimonyHistoryWorker(QThread):
             except ApiError:
                 accounts = []
 
+            # Posições individuais para donuts por categoria
+            try:
+                assets = self._client.get_assets()
+                asset_positions: list[dict] = []
+                for asset in assets:
+                    try:
+                        pos = self._client.get_asset_position(asset["id"])
+                        asset_positions.append(pos)
+                    except ApiError:
+                        pass
+            except ApiError:
+                asset_positions = []
+
             self.patrimony_ready.emit({
-                "monthly_bars": _build_monthly_series(current_nw, transactions, 12),
-                "yearly_line":  _build_yearly_series(current_nw,  transactions, 10),
-                "distribution": _build_distribution(portfolio, accounts),
+                "monthly_bars":    _build_monthly_series(current_nw, transactions, 12),
+                "yearly_line":     _build_yearly_series(current_nw, transactions, 10),
+                "distribution":    _build_distribution(portfolio, accounts),
+                "category_donuts": _build_category_donuts(asset_positions),
             })
 
         except ApiError as exc:
@@ -173,9 +205,8 @@ class PatrimonyHistoryWorker(QThread):
 
 
 # ======================================================================
-# Processamento de dados para os gráficos (funções puras, sem efeitos)
+# Processamento de dados (funções puras)
 # ======================================================================
-
 
 def _build_monthly_series(
     current_nw: float, transactions: list[dict], months_back: int
@@ -256,13 +287,42 @@ def _build_distribution(portfolio: dict, accounts: list[dict]) -> list[dict]:
     ]
 
 
+def _build_category_donuts(asset_positions: list[dict]) -> dict[str, list[dict]]:
+    """
+    Agrupa posições de ativos por categoria para os donuts individuais.
+
+    Retorna dict: categoria → lista de {ticker, name, value, color}
+    """
+    cat_assets: dict[str, list[dict]] = {}
+
+    for pos in asset_positions:
+        asset_type = pos.get("asset_type", "outros")
+        cat  = _TYPE_TO_CAT.get(str(asset_type), "Outros")
+        value = float(pos.get("estimated_cost", 0))
+        if value <= 0:
+            continue
+
+        label = pos.get("ticker") or pos.get("name", "?")
+        cat_assets.setdefault(cat, []).append({
+            "ticker": label,
+            "name":   pos.get("name", label),
+            "value":  value,
+        })
+
+    # Ordena por valor descendente e atribui cores fixas por posição
+    for cat, items in cat_assets.items():
+        items.sort(key=lambda x: x["value"], reverse=True)
+        for i, item in enumerate(items):
+            item["color"] = _ASSET_SLOT_COLORS[i % len(_ASSET_SLOT_COLORS)]
+
+    return cat_assets
+
+
 # ======================================================================
 # Widgets de gráfico matplotlib
 # ======================================================================
 
-
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
-    """Converte '#RRGGBB' para tupla (r, g, b) normalizada [0..1]."""
     h = hex_color.lstrip("#")
     return tuple(int(h[i:i+2], 16) / 255 for i in (0, 2, 4))  # type: ignore[return-value]
 
@@ -288,15 +348,13 @@ class BarsCanvas(FigureCanvas):
         values = [d["value"] for d in monthly]
         colors = [_GREEN_RGB if v >= 0 else _RED_RGB for v in values]
 
-        x = np.arange(len(labels))
-        bars = ax.bar(x, values, color=colors, width=0.6, zorder=3)
+        x    = np.arange(len(labels))
+        ax.bar(x, values, color=colors, width=0.6, zorder=3)
         ax.set_xticks(x)
         ax.set_xticklabels(labels, fontsize=9)
         ax.yaxis.set_major_formatter(
             plt.FuncFormatter(lambda v, _: f"R$ {v:,.0f}".replace(",", "."))
         )
-
-        # Linha de zero visível
         ax.axhline(0, color=_GRID_RGB, linewidth=0.8, zorder=2)
 
         self._fig.tight_layout(pad=0.4)
@@ -354,17 +412,16 @@ class LineCanvas(FigureCanvas):
 
 class DonutCanvas(FigureCanvas):
     """
-    Gráfico de donut — distribuição do patrimônio por categoria.
-    Suporta hover: exibe anotação flutuante com nome, valor e %.
+    Gráfico de donut com hover — distribuição por categoria ou por ativo.
     """
 
-    def __init__(self, parent=None) -> None:
-        self._fig = Figure(figsize=(2.5, 2.0), facecolor=_BG_RGB)
+    def __init__(self, figsize=(2.5, 2.0), parent=None) -> None:
+        self._fig = Figure(figsize=figsize, facecolor=_BG_RGB)
         super().__init__(self._fig)
         self.setParent(parent)
         self.setMinimumHeight(195)
         self.setMaximumHeight(220)
-        self._ax    = self._fig.add_subplot(111)
+        self._ax     = self._fig.add_subplot(111)
         self._wedges: list = []
         self._labels: list[str] = []
         self._values: list[float] = []
@@ -396,7 +453,6 @@ class DonutCanvas(FigureCanvas):
         )
         self._wedges = wedges
 
-        # Anotação oculta — mostrada no hover
         self._annot = ax.annotate(
             "", xy=(0, 0),
             xytext=(0.05, -0.12),
@@ -418,27 +474,24 @@ class DonutCanvas(FigureCanvas):
             if wedge.contains_point([event.x, event.y]):
                 total = sum(self._values) or 1
                 pct   = self._values[i] / total * 100
-                label = (
+                self._annot.set_text(
                     f"{self._labels[i]}\n"
                     f"{_fmt_brl(self._values[i])}  ({pct:.1f}%)"
                 )
-                self._annot.set_text(label)
                 self._annot.set_visible(True)
                 self.draw_idle()
                 return
-        # Fora de qualquer fatia — esconde anotação
         if self._annot.get_visible():
             self._annot.set_visible(False)
             self.draw_idle()
 
 
 # ======================================================================
-# Componentes de UI reutilizáveis
+# Widgets de UI reutilizáveis
 # ======================================================================
 
-
 class SummaryCard(QFrame):
-    """Card compacto que exibe um único indicador financeiro."""
+    """Card compacto com título, valor principal e subtítulo opcional."""
 
     def __init__(self, title: str, default_color: str = "#E8EAED") -> None:
         super().__init__()
@@ -459,6 +512,7 @@ class SummaryCard(QFrame):
         self._sub_label = QLabel("")
         self._sub_label.setObjectName("cardSub")
         self._sub_label.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        self._sub_label.setVisible(False)
 
         layout.addWidget(self._title_label)
         layout.addWidget(self._value_label)
@@ -466,24 +520,84 @@ class SummaryCard(QFrame):
 
     def set_value(self, value: str, color: str | None = None, sub: str = "") -> None:
         self._value_label.setText(value)
-        used_color = color if color else self._default_color
-        self._value_label.setStyleSheet(f"color: {used_color};")
+        self._value_label.setStyleSheet(f"color: {color or self._default_color};")
         self._sub_label.setText(sub)
         self._sub_label.setVisible(bool(sub))
 
 
-class AlertRow(QFrame):
+class DebtProgressRow(QFrame):
     """
-    Linha de alerta com indicador colorido de prioridade.
+    Linha de progresso para uma dívida:
+      Nome + instituição | barra colorida (parcelas_pagas/total) | valor pago vs total | taxa%
+    """
 
-    Prioridade → cor do marcador:
-      ALTA  → #FF6B6B (vermelho)
-      MÉDIA → #FFB347 (laranja)
-      BAIXA → #4A9EFF (azul)
-    """
+    def __init__(self, debt: dict) -> None:
+        super().__init__()
+        self.setObjectName("debtRow")
+        self.setStyleSheet(
+            f"QFrame#debtRow {{ background: {_GRID}; border-radius: 8px; }}"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
+
+        # Cabeçalho: nome + taxa
+        header = QHBoxLayout()
+        name_lbl = QLabel(f"{debt.get('name', '')}  ·  {debt.get('institution', '')}")
+        name_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 12px; font-weight: 600; background: transparent;")
+        rate_lbl = QLabel(f"{float(debt.get('interest_rate', 0)):.2f}% a.m.")
+        rate_lbl.setStyleSheet("color: #FF6B6B; font-size: 11px; background: transparent;")
+        rate_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        header.addWidget(name_lbl)
+        header.addStretch()
+        header.addWidget(rate_lbl)
+
+        # Barra de progresso
+        paid  = int(debt.get("paid_installments", 0))
+        total = int(debt.get("total_installments", 1))
+        pct   = int(paid / max(total, 1) * 100)
+
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(pct)
+        bar.setFormat(f"{paid}/{total} parcelas  ({pct}%)")
+        bar.setFixedHeight(18)
+        bar.setTextVisible(True)
+        bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: #2A2D3E;
+                border: none;
+                border-radius: 4px;
+                color: white;
+                font-size: 10px;
+                text-align: center;
+            }}
+            QProgressBar::chunk {{
+                background: #FF6B6B;
+                border-radius: 4px;
+            }}
+        """)
+
+        # Rodapé: valor pago vs total
+        remaining = float(debt.get("remaining_amount", 0))
+        total_amt = float(debt.get("total_amount", 0))
+        paid_amt  = total_amt - remaining
+        footer_lbl = QLabel(
+            f"Pago: {_fmt_brl(paid_amt)}  ·  Restante: {_fmt_brl(remaining)}  ·  Total: {_fmt_brl(total_amt)}"
+        )
+        footer_lbl.setStyleSheet("color: #8B90A7; font-size: 10px; background: transparent;")
+
+        layout.addLayout(header)
+        layout.addWidget(bar)
+        layout.addWidget(footer_lbl)
+
+
+class AlertRow(QFrame):
+    """Linha de alerta com indicador de prioridade colorido."""
 
     _PRIORITY_COLOR: dict[str, str] = {
-        "ALTA": "#FF6B6B",
+        "ALTA":  "#FF6B6B",
         "MÉDIA": "#FFB347",
         "BAIXA": "#4A9EFF",
     }
@@ -522,20 +636,104 @@ class AlertRow(QFrame):
         layout.addStretch()
 
 
+class CategoryDonutWidget(QFrame):
+    """
+    Widget composto: título da categoria + donut dos ativos + legenda lateral.
+
+    Exibe a distribuição de ativos individuais dentro de uma categoria
+    (ex: todas as ações da carteira com suas proporções).
+    """
+
+    def __init__(self, category: str, assets: list[dict]) -> None:
+        super().__init__()
+        self.setObjectName("categoryDonutCard")
+        self.setStyleSheet(
+            f"QFrame#categoryDonutCard {{ background: {_GRID}; border-radius: 8px; }}"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(8)
+
+        cat_color = _COLOR_MAP.get(category, "#94A3B8")
+        title = QLabel(category)
+        title.setStyleSheet(
+            f"color: {cat_color}; font-size: 13px; font-weight: 700; background: transparent;"
+        )
+        outer.addWidget(title)
+
+        row = QHBoxLayout()
+        row.setSpacing(12)
+
+        # Donut
+        canvas = DonutCanvas(figsize=(2.2, 1.8))
+        canvas.setMinimumHeight(170)
+        canvas.setMaximumHeight(190)
+        distribution = [
+            {"category": a["ticker"], "value": a["value"], "color": a["color"]}
+            for a in assets
+        ]
+        canvas.update_data(distribution)
+        row.addWidget(canvas, stretch=50)
+
+        # Legenda
+        legend = QWidget()
+        legend.setStyleSheet("background: transparent;")
+        legend_layout = QVBoxLayout(legend)
+        legend_layout.setContentsMargins(0, 0, 0, 0)
+        legend_layout.setSpacing(4)
+
+        total = sum(a["value"] for a in assets) or 1
+        for asset in assets[:8]:  # máximo 8 itens
+            pct = asset["value"] / total * 100
+            color = asset["color"]
+
+            item = QWidget()
+            item.setStyleSheet("background: transparent;")
+            item_layout = QVBoxLayout(item)
+            item_layout.setContentsMargins(0, 0, 0, 2)
+            item_layout.setSpacing(2)
+
+            hdr = QHBoxLayout()
+            dot_lbl = QLabel("●")
+            dot_lbl.setStyleSheet(f"color: {color}; font-size: 9px; background: transparent;")
+            dot_lbl.setFixedWidth(12)
+            ticker_lbl = QLabel(asset["ticker"])
+            ticker_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 10px; font-weight: 600; background: transparent;")
+            val_lbl = QLabel(_fmt_brl(asset["value"]))
+            val_lbl.setStyleSheet("color: #8B90A7; font-size: 9px; background: transparent;")
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            hdr.addWidget(dot_lbl)
+            hdr.addWidget(ticker_lbl)
+            hdr.addStretch()
+            hdr.addWidget(val_lbl)
+
+            pct_lbl = QLabel(f"{pct:.1f}%")
+            pct_lbl.setStyleSheet("color: #8B90A7; font-size: 9px; background: transparent;")
+            pct_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+            item_layout.addLayout(hdr)
+            item_layout.addWidget(pct_lbl)
+            legend_layout.addWidget(item)
+
+        legend_layout.addStretch()
+        row.addWidget(legend, stretch=50)
+        outer.addLayout(row)
+
+
 # ======================================================================
 # Página principal do Dashboard
 # ======================================================================
 
-
 class DashboardPage(QWidget):
     """
-    Dashboard completo com cards de resumo, gráficos de evolução
-    patrimonial e lista de alertas.
+    Dashboard completo com duas linhas de cards, seção de dívidas,
+    gráficos de evolução patrimonial, donuts por categoria e alertas.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self._client = ApiClient()
+        self._client     = ApiClient()
         self._worker:     DashboardWorker        | None = None
         self._pat_worker: PatrimonyHistoryWorker | None = None
 
@@ -550,7 +748,8 @@ class DashboardPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
+        self._scroll = QScrollArea()
+        scroll = self._scroll
         scroll.setObjectName("dashboardScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -562,30 +761,67 @@ class DashboardPage(QWidget):
         self._content_layout.setContentsMargins(32, 28, 32, 32)
         self._content_layout.setSpacing(24)
 
+        # Loading label
         self._loading_label = QLabel("Carregando dados do dashboard…")
         self._loading_label.setObjectName("loadingLabel")
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._content_layout.addWidget(self._loading_label)
 
-        cards_row = QHBoxLayout()
-        cards_row.setSpacing(16)
+        # ── Linha 1: 4 cards patrimoniais ──────────────────────────────
+        row1 = QHBoxLayout()
+        row1.setSpacing(16)
+        self._card_d0         = SummaryCard("Patrimônio D+0",         "#4A9EFF")
+        self._card_patrimonio = SummaryCard("Patrimônio Total",        "#4A9EFF")
+        self._card_reserva    = SummaryCard("Reserva de Emergência",   "#00C896")
+        self._card_score      = SummaryCard("Score de Saúde",          "#00C896")
+        for c in [self._card_d0, self._card_patrimonio, self._card_reserva, self._card_score]:
+            c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            c.setVisible(False)
+            row1.addWidget(c)
+        self._content_layout.addLayout(row1)
 
-        self._card_patrimonio = SummaryCard("Patrimônio Líquido", "#4A9EFF")
-        self._card_receitas   = SummaryCard("Receitas do Mês",    "#00C896")
-        self._card_despesas   = SummaryCard("Despesas do Mês",    "#FF6B6B")
-        self._card_score      = SummaryCard("Score de Saúde",     "#00C896")
+        # ── Linha 2: 3 cards mensais ───────────────────────────────────
+        row2 = QHBoxLayout()
+        row2.setSpacing(16)
+        self._card_receitas = SummaryCard("Receitas do Mês",  "#00C896")
+        self._card_despesas = SummaryCard("Despesas do Mês",  "#FF6B6B")
+        self._card_saldo    = SummaryCard("Saldo do Mês",     "#4A9EFF")
+        for c in [self._card_receitas, self._card_despesas, self._card_saldo]:
+            c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            c.setVisible(False)
+            row2.addWidget(c)
+        # Espaçador para não esticar os 3 cards como se fossem 4
+        row2.addStretch(1)
+        self._content_layout.addLayout(row2)
 
-        for card in self._cards():
-            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            card.setVisible(False)
-            cards_row.addWidget(card)
+        # ── Seção de dívidas ───────────────────────────────────────────
+        self._debts_title = QLabel("Dívidas e Financiamentos")
+        self._debts_title.setObjectName("sectionTitle")
+        self._debts_title.setVisible(False)
+        self._content_layout.addWidget(self._debts_title)
 
-        self._content_layout.addLayout(cards_row)
+        self._debts_area = QVBoxLayout()
+        self._debts_area.setSpacing(10)
+        self._content_layout.addLayout(self._debts_area)
 
+        # ── Área de gráficos principais ────────────────────────────────
         self._charts_widget = self._build_charts_area()
         self._charts_widget.setVisible(False)
         self._content_layout.addWidget(self._charts_widget)
 
+        # ── Seção de donuts por categoria ──────────────────────────────
+        self._cat_donuts_title = QLabel("Distribuição por Categoria")
+        self._cat_donuts_title.setObjectName("sectionTitle")
+        self._cat_donuts_title.setVisible(False)
+        self._content_layout.addWidget(self._cat_donuts_title)
+
+        self._cat_donuts_grid_widget = QWidget()
+        self._cat_donuts_grid_widget.setVisible(False)
+        self._cat_donuts_grid = QGridLayout(self._cat_donuts_grid_widget)
+        self._cat_donuts_grid.setSpacing(16)
+        self._content_layout.addWidget(self._cat_donuts_grid_widget)
+
+        # ── Alertas ────────────────────────────────────────────────────
         self._alerts_title = QLabel("Alertas Ativos")
         self._alerts_title.setObjectName("sectionTitle")
         self._alerts_title.setVisible(False)
@@ -595,6 +831,7 @@ class DashboardPage(QWidget):
         self._alerts_area.setSpacing(8)
         self._content_layout.addLayout(self._alerts_area)
 
+        # ── Botão atualizar ────────────────────────────────────────────
         self._reload_btn = QPushButton("Atualizar")
         self._reload_btn.setFixedWidth(120)
         self._reload_btn.setVisible(False)
@@ -608,11 +845,6 @@ class DashboardPage(QWidget):
         outer.addWidget(scroll)
 
     def _build_charts_area(self) -> QWidget:
-        """
-        Monta o container com os três gráficos matplotlib:
-          Linha 1: barras mensais (largura total)
-          Linha 2: linha anual (45%) | donut + legenda top-5 (55%)
-        """
         container = QWidget()
         container.setObjectName("chartsArea")
         vbox = QVBoxLayout(container)
@@ -630,11 +862,11 @@ class DashboardPage(QWidget):
         self._charts_empty_msg.setVisible(False)
         vbox.addWidget(self._charts_empty_msg)
 
-        # Gráfico 1: barras mensais
+        # Barras mensais
         self._bars_canvas = BarsCanvas()
         vbox.addWidget(self._bars_canvas)
 
-        # Linha 2: linha anual + donut
+        # Linha + donut principal
         self._row2_widget = QWidget()
         row2_hbox = QHBoxLayout(self._row2_widget)
         row2_hbox.setContentsMargins(0, 0, 0, 0)
@@ -689,10 +921,16 @@ class DashboardPage(QWidget):
         self._pat_worker.start()
 
     # ------------------------------------------------------------------
-    # Slots — DashboardWorker (cards + alertas)
+    # Slots — DashboardWorker
     # ------------------------------------------------------------------
 
-    def _on_data_ready(self, dashboard: dict, alerts: dict) -> None:
+    def _on_data_ready(
+        self,
+        dashboard: dict,
+        alerts: dict,
+        emergency_fund: dict,
+        debts: list,
+    ) -> None:
         self._loading_label.setVisible(False)
         self._set_content_visible(True)
 
@@ -700,32 +938,64 @@ class DashboardPage(QWidget):
         monthly   = dashboard.get("monthly_summary", {})
         health    = dashboard.get("health_score", {})
 
+        # ── Linha 1 ────────────────────────────────────────────────────
+
+        # D+0: saldo em contas (proxy — idealmente viria de /portfolio/liquidity)
+        d0 = float(net_worth.get("account_balance", 0))
+        self._card_d0.set_value(
+            _fmt_brl(d0),
+            color="#4A9EFF",
+            sub="Liquidez imediata (contas)",
+        )
+
         nw = float(net_worth.get("net_worth", 0))
-        nw_color = "#4A9EFF" if nw >= 0 else "#FF6B6B"
         self._card_patrimonio.set_value(
             _fmt_brl(nw),
-            color=nw_color,
+            color="#4A9EFF" if nw >= 0 else "#FF6B6B",
             sub=f"Ativos: {_fmt_brl(float(net_worth.get('total_assets', 0)))}",
         )
 
-        self._card_receitas.set_value(
-            _fmt_brl(float(monthly.get("income", 0))),
-            color="#00C896",
-            sub=monthly.get("reference_month", ""),
-        )
-
-        self._card_despesas.set_value(
-            _fmt_brl(float(monthly.get("expense", 0))),
-            color="#FF6B6B",
-            sub=f"Taxa poupança: {float(monthly.get('savings_rate', 0)):.1f}%",
-        )
+        ef_saldo   = float(emergency_fund.get("saldo_total", 0))
+        ef_meses   = float(emergency_fund.get("meses_cobertos", 0))
+        if ef_meses >= 6:
+            ef_color, ef_status = "#00C896", f"{ef_meses:.1f} meses cobertos ✓"
+        elif ef_meses >= 3:
+            ef_color, ef_status = "#FFB347", f"{ef_meses:.1f} meses cobertos"
+        else:
+            ef_color, ef_status = "#FF6B6B", f"{ef_meses:.1f} meses cobertos ⚠"
+        self._card_reserva.set_value(_fmt_brl(ef_saldo), color=ef_color, sub=ef_status)
 
         score = int(health.get("total", 0))
         score_color = "#00C896" if score >= 60 else ("#FFB347" if score >= 40 else "#FF6B6B")
         self._card_score.set_value(f"{score} / 100", color=score_color)
 
+        # ── Linha 2 ────────────────────────────────────────────────────
+
+        income  = float(monthly.get("income", 0))
+        expense = float(monthly.get("expense", 0))
+        balance = float(monthly.get("balance", 0))
+        ref     = monthly.get("reference_month", "")
+
+        self._card_receitas.set_value(_fmt_brl(income),  color="#00C896", sub=ref)
+        self._card_despesas.set_value(
+            _fmt_brl(expense), color="#FF6B6B",
+            sub=f"Taxa poupança: {float(monthly.get('savings_rate', 0)):.1f}%",
+        )
+        self._card_saldo.set_value(
+            _fmt_brl(balance),
+            color="#00C896" if balance >= 0 else "#FF6B6B",
+            sub=ref,
+        )
+
+        # ── Dívidas ────────────────────────────────────────────────────
+        self._populate_debts(debts)
+
+        # ── Alertas ────────────────────────────────────────────────────
         self._populate_alerts(alerts.get("alerts", []))
         self._reload_btn.setVisible(True)
+
+        # Garante que o scroll retorne ao topo após todos os widgets aparecerem
+        QTimer.singleShot(50, lambda: self._scroll.verticalScrollBar().setValue(0))
 
     def _on_error(self, message: str) -> None:
         self._loading_label.setText(f"Erro ao carregar: {message}")
@@ -734,13 +1004,14 @@ class DashboardPage(QWidget):
         self._reload_btn.setVisible(True)
 
     # ------------------------------------------------------------------
-    # Slots — PatrimonyHistoryWorker (gráficos)
+    # Slots — PatrimonyHistoryWorker
     # ------------------------------------------------------------------
 
     def _on_patrimony_ready(self, data: dict) -> None:
         monthly = data["monthly_bars"]
         yearly  = data["yearly_line"]
         distrib = data["distribution"]
+        cat_donuts = data.get("category_donuts", {})
 
         has_data = (
             any(abs(d["value"]) > 0.01 for d in monthly)
@@ -748,22 +1019,19 @@ class DashboardPage(QWidget):
         )
 
         if not has_data:
-            self._charts_empty_msg.setText(
-                "Adicione lançamentos para ver a evolução patrimonial"
-            )
             self._charts_empty_msg.setVisible(True)
             self._bars_canvas.setVisible(False)
             self._row2_widget.setVisible(False)
-            return
+        else:
+            self._charts_empty_msg.setVisible(False)
+            self._bars_canvas.setVisible(True)
+            self._row2_widget.setVisible(True)
+            self._bars_canvas.update_data(monthly)
+            self._line_canvas.update_data(yearly)
+            self._donut_canvas.update_data(distrib)
+            self._populate_legend(distrib[:5], sum(d["value"] for d in distrib))
 
-        self._charts_empty_msg.setVisible(False)
-        self._bars_canvas.setVisible(True)
-        self._row2_widget.setVisible(True)
-
-        self._bars_canvas.update_data(monthly)
-        self._line_canvas.update_data(yearly)
-        self._donut_canvas.update_data(distrib)
-        self._populate_legend(distrib[:5], sum(d["value"] for d in distrib))
+        self._populate_category_donuts(cat_donuts)
 
     def _on_patrimony_error(self, message: str) -> None:
         self._charts_empty_msg.setText(f"Erro ao carregar gráficos: {message}")
@@ -775,25 +1043,45 @@ class DashboardPage(QWidget):
     # Helpers de UI
     # ------------------------------------------------------------------
 
-    def _cards(self) -> list[SummaryCard]:
+    def _all_cards(self) -> list[SummaryCard]:
         return [
+            self._card_d0,
             self._card_patrimonio,
+            self._card_reserva,
+            self._card_score,
             self._card_receitas,
             self._card_despesas,
-            self._card_score,
+            self._card_saldo,
         ]
 
     def _set_content_visible(self, visible: bool) -> None:
-        for card in self._cards():
+        for card in self._all_cards():
             card.setVisible(visible)
         self._charts_widget.setVisible(visible)
         self._alerts_title.setVisible(visible)
+        self._debts_title.setVisible(visible)
+
+    def _populate_debts(self, debts: list[dict]) -> None:
+        # Limpa rows anteriores
+        while self._debts_area.count():
+            item = self._debts_area.takeAt(0)
+            if w := item.widget():
+                w.deleteLater()
+
+        if not debts:
+            empty = QLabel("Nenhuma dívida cadastrada")
+            empty.setObjectName("noAlertsLabel")
+            self._debts_area.addWidget(empty)
+            return
+
+        for debt in debts:
+            self._debts_area.addWidget(DebtProgressRow(debt))
 
     def _populate_alerts(self, alerts: list[dict]) -> None:
         while self._alerts_area.count():
             item = self._alerts_area.takeAt(0)
-            if widget := item.widget():
-                widget.deleteLater()
+            if w := item.widget():
+                w.deleteLater()
 
         if not alerts:
             no_alerts = QLabel("Nenhum alerta ativo no momento.")
@@ -828,9 +1116,7 @@ class DashboardPage(QWidget):
                 f"color: {color}; font-size: 11px; font-weight: 600; background: transparent;"
             )
             val_lbl = QLabel(_fmt_brl(value))
-            val_lbl.setStyleSheet(
-                f"color: {_TEXT}; font-size: 10px; background: transparent;"
-            )
+            val_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 10px; background: transparent;")
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             header.addWidget(name_lbl)
             header.addStretch()
@@ -863,11 +1149,38 @@ class DashboardPage(QWidget):
 
         self._legend_layout.addStretch()
 
+    def _populate_category_donuts(self, cat_donuts: dict[str, list[dict]]) -> None:
+        # Limpa grade anterior
+        while self._cat_donuts_grid.count():
+            item = self._cat_donuts_grid.takeAt(0)
+            if w := item.widget():
+                w.deleteLater()
+
+        if not cat_donuts:
+            self._cat_donuts_title.setVisible(False)
+            self._cat_donuts_grid_widget.setVisible(False)
+            return
+
+        self._cat_donuts_title.setVisible(True)
+        self._cat_donuts_grid_widget.setVisible(True)
+
+        # Ordena categorias por valor total descendente
+        sorted_cats = sorted(
+            cat_donuts.items(),
+            key=lambda kv: sum(a["value"] for a in kv[1]),
+            reverse=True,
+        )
+
+        for idx, (cat, assets) in enumerate(sorted_cats):
+            row_idx = idx // 2
+            col_idx = idx % 2
+            widget  = CategoryDonutWidget(cat, assets)
+            self._cat_donuts_grid.addWidget(widget, row_idx, col_idx)
+
 
 # ======================================================================
 # Utilitário de formatação
 # ======================================================================
-
 
 def _fmt_brl(value: float) -> str:
     """Formata número como moeda brasileira: R$ 1.234,56"""

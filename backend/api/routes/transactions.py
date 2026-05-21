@@ -1,26 +1,28 @@
 """
 Endpoints de lançamentos financeiros (receitas, despesas e transferências).
 
-Ordem dos endpoints importa: /summary deve vir antes de /{id}
-para evitar que a string "summary" seja interpretada como um inteiro.
-Como {transaction_id} é tipado como int, FastAPI já resolve corretamente,
-mas manter /summary primeiro é uma boa prática explícita.
+Ordem dos endpoints importa: /summary e /emergency-fund devem vir antes
+de /{id} para evitar que as strings sejam interpretadas como inteiros.
 """
 
+import calendar
 from datetime import date
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas.transactions import (
+    EmergencyFundOut,
     MonthlySummaryOut,
     TransactionCreate,
     TransactionOut,
     TransactionUpdate,
 )
 from backend.core.database import get_db
-from backend.models.transaction import Transaction, TransactionCategory
+from backend.models.transaction import Transaction, TransactionCategory, TransactionType
 from backend.repositories.transaction_repository import TransactionRepository
 from backend.services.financial_summary_service import FinancialSummaryService
 
@@ -45,6 +47,58 @@ async def get_monthly_summary(
         balance=summary.balance,
         savings_rate=summary.savings_rate,
         reference_month=f"{ref.month:02d}/{ref.year}",
+    )
+
+
+@router.get("/emergency-fund", response_model=EmergencyFundOut)
+async def get_emergency_fund(db: AsyncSession = Depends(get_db)):
+    """
+    Retorna o status da reserva de emergência:
+      - saldo_total: soma dos lançamentos marcados como is_emergency_fund=True
+      - media_gastos_6m: média mensal de despesas nos últimos 6 meses
+      - meses_cobertos: saldo_total / media_gastos_6m
+    """
+    # Saldo da reserva = soma dos valores marcados como emergência
+    ef_result = await db.execute(
+        select(func.coalesce(func.sum(Transaction.amount), Decimal("0.00"))).where(
+            Transaction.is_emergency_fund.is_(True),
+            Transaction.transaction_type == TransactionType.INCOME,
+        )
+    )
+    saldo_total: Decimal = ef_result.scalar() or Decimal("0.00")
+
+    # Despesas dos últimos 6 meses
+    today = date.today()
+    # Primeiro dia do mês 6 meses atrás
+    six_months_ago_month = today.month - 6
+    six_months_ago_year  = today.year
+    if six_months_ago_month <= 0:
+        six_months_ago_month += 12
+        six_months_ago_year  -= 1
+    start_6m = date(six_months_ago_year, six_months_ago_month, 1)
+    last_day  = calendar.monthrange(today.year, today.month)[1]
+    end_today = today.replace(day=last_day)
+
+    expense_result = await db.execute(
+        select(func.coalesce(func.sum(Transaction.amount), Decimal("0.00"))).where(
+            Transaction.transaction_type == TransactionType.EXPENSE,
+            Transaction.transaction_date >= start_6m,
+            Transaction.transaction_date <= end_today,
+        )
+    )
+    total_expense_6m: Decimal = expense_result.scalar() or Decimal("0.00")
+    media_gastos_6m = (total_expense_6m / 6).quantize(Decimal("0.01"))
+
+    meses_cobertos = (
+        (saldo_total / media_gastos_6m).quantize(Decimal("0.1"))
+        if media_gastos_6m > 0
+        else Decimal("0.0")
+    )
+
+    return EmergencyFundOut(
+        saldo_total=saldo_total,
+        media_gastos_6m=media_gastos_6m,
+        meses_cobertos=meses_cobertos,
     )
 
 
