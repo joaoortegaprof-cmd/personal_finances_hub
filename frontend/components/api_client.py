@@ -154,6 +154,10 @@ class ApiClient:
         params = {"reference_date": reference_date.isoformat()} if reference_date else None
         return self._get("/transactions/summary", params=params)
 
+    def get_essential_cost(self) -> dict:
+        """Retorna custo mensal médio de categorias essenciais nos últimos 3 meses."""
+        return self._get("/transactions/essential-cost")
+
     # ------------------------------------------------------------------
     # Carteira de investimentos
     # ------------------------------------------------------------------
@@ -342,6 +346,14 @@ class ApiClient:
     def update_invoice_status(self, card_id: int, invoice_id: int, status: str) -> dict:
         """Atualiza o status de uma fatura (aberta → fechada → paga)."""
         return self._patch(f"/cards/{card_id}/invoices/{invoice_id}/status", {"status": status})
+
+    def get_card_available_limit(self, card_id: int) -> dict:
+        """Retorna credit_limit, used_amount e available do cartão."""
+        return self._get(f"/cards/{card_id}/available-limit")
+
+    def get_card_transactions(self, card_id: int) -> list[dict]:
+        """Lista transações vinculadas a qualquer fatura do cartão."""
+        return self._get("/transactions", params={"credit_card_id": card_id})
 
     # ------------------------------------------------------------------
     # Dados de mercado

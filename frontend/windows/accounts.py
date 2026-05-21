@@ -66,6 +66,12 @@ class AccountsWorker(QThread):
     def run(self) -> None:
         try:
             accounts = self._client.get_accounts()
+            for acc in accounts:
+                try:
+                    bal = self._client.get_account_balance(acc["id"])
+                    acc["_current_balance"] = bal.get("balance", acc.get("initial_balance", 0))
+                except ApiError:
+                    acc["_current_balance"] = acc.get("initial_balance", 0)
             self.data_ready.emit(accounts)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
@@ -155,7 +161,8 @@ _COL_BANK    = 1
 _COL_TYPE    = 2
 _COL_CURRENCY= 3
 _COL_BALANCE = 4
-_COL_ACTIONS = 5
+_COL_CURRENT = 5
+_COL_ACTIONS = 6
 
 
 # ======================================================================
@@ -382,7 +389,7 @@ class AccountsPage(QWidget):
         outer.addWidget(scroll)
 
     def _build_table(self) -> QTableWidget:
-        headers = ["Nome", "Banco", "Tipo", "Moeda", "Saldo Inicial", "Ações"]
+        headers = ["Nome", "Banco", "Tipo", "Moeda", "Saldo Inicial", "Saldo Atual", "Ações"]
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -428,6 +435,8 @@ class AccountsPage(QWidget):
         self._table.setRowCount(len(accounts))
         for row, acc in enumerate(accounts):
             initial_balance = float(acc.get("initial_balance", 0))
+            current_balance = float(acc.get("_current_balance", initial_balance))
+            current_color   = "#00C896" if current_balance >= 0 else "#FF6B6B"
 
             data = [
                 (acc.get("name", ""), "#E8EAED"),
@@ -435,12 +444,13 @@ class AccountsPage(QWidget):
                 (_TYPE_DISPLAY.get(acc.get("account_type", ""), acc.get("account_type", "")), "#8B90A7"),
                 (acc.get("currency", "BRL"), "#8B90A7"),
                 (_fmt_brl(initial_balance), "#4A9EFF"),
+                (_fmt_brl(current_balance), current_color),
             ]
 
             for col, (text, color) in enumerate(data):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
-                if col == _COL_BALANCE:
+                if col in (_COL_BALANCE, _COL_CURRENT):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._table.setItem(row, col, item)
 

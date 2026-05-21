@@ -144,3 +144,15 @@ async def init_db() -> None:
                     "ADD COLUMN is_emergency_fund BOOLEAN NOT NULL DEFAULT 0"
                 )
             )
+
+        # Migração: coluna expense_nature na tabela transactions
+        result = await conn.execute(
+            text(
+                "SELECT COUNT(*) FROM pragma_table_info('transactions') "
+                "WHERE name='expense_nature'"
+            )
+        )
+        if result.scalar() == 0:
+            await conn.execute(
+                text("ALTER TABLE transactions ADD COLUMN expense_nature VARCHAR")
+            )

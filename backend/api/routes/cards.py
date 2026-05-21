@@ -12,7 +12,10 @@ Rotas:
     PATCH  /cards/{id}/invoices/{inv_id}/status - muda status da fatura
 """
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas.accounts import (
@@ -24,7 +27,8 @@ from backend.api.schemas.accounts import (
     InvoiceStatusUpdate,
 )
 from backend.core.database import get_db
-from backend.models.account import CreditCard, CreditCardInvoice
+from backend.models.account import CreditCard, CreditCardInvoice, InvoiceStatus
+from backend.models.transaction import Transaction
 from backend.repositories.account_repository import AccountRepository
 
 router = APIRouter(prefix="/cards", tags=["Cartões"])
@@ -76,6 +80,38 @@ async def delete_card(card_id: int, db: AsyncSession = Depends(get_db)):
     deleted = await repo.delete_card(card_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cartão não encontrado")
+
+
+@router.get("/{card_id}/available-limit")
+async def get_card_available_limit(card_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Retorna o limite disponível do cartão:
+      - credit_limit: limite total cadastrado
+      - used_amount:  total de compras na fatura aberta
+      - available:    credit_limit - used_amount
+    """
+    repo = AccountRepository(db)
+    card = await repo.get_card_by_id(card_id)
+    if card is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cartão não encontrado")
+
+    open_invoice = await repo.get_open_invoice(card_id)
+
+    used_amount = Decimal("0.00")
+    if open_invoice:
+        result = await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), Decimal("0.00")))
+            .where(Transaction.invoice_id == open_invoice.id)
+        )
+        used_amount = result.scalar() or Decimal("0.00")
+
+    limit = card.credit_limit
+    return {
+        "credit_limit":      float(limit),
+        "used_amount":       float(used_amount),
+        "available":         float(limit - used_amount),
+        "open_invoice_id":   open_invoice.id if open_invoice else None,
+    }
 
 
 @router.get("/{card_id}/invoices", response_model=list[CreditCardInvoiceOut])

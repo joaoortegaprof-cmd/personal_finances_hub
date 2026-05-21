@@ -81,6 +81,22 @@ class TransactionCategory(str, enum.Enum):
     OTHER       = "outros"         # Tudo que não se encaixa nas categorias acima
 
 
+class ExpenseNature(str, enum.Enum):
+    """
+    Classifica a natureza de uma despesa para análise de saúde financeira.
+
+    Só é relevante para transaction_type == EXPENSE (ou TRANSFER).
+    Receitas devem ter este campo como None.
+    """
+    ESSENTIAL      = "essential"       # Gasto essencial (moradia, saúde, transporte…)
+    DISCRETIONARY  = "discretionary"   # Gasto supérfluo (lazer, restaurante, compras…)
+    INVESTMENT     = "investment"      # Aporte / investimento
+    TRANSFER       = "transfer"        # Transferência interna entre contas
+
+
+# Mapeamento automático: categoria → natureza da despesa (populado abaixo)
+
+
 # -----------------------------------------------------------------
 # Model: Transaction
 # -----------------------------------------------------------------
@@ -133,6 +149,12 @@ class Transaction(Base):
         nullable=False,
         default=TransactionCategory.OTHER,
         server_default=TransactionCategory.OTHER.value,
+    )
+
+    # Natureza da despesa (nullable — só relevante para despesas/transferências)
+    expense_nature: Mapped[ExpenseNature | None] = mapped_column(
+        Enum(ExpenseNature, name="expense_nature_enum"),
+        nullable=True,
     )
 
     # -----------------------------------------------------------------
@@ -262,3 +284,18 @@ class Transaction(Base):
             f"amount={self.amount} "
             f"date={self.transaction_date}>"
         )
+
+
+# Mapeamento automático: categoria → natureza da despesa
+CATEGORY_TO_NATURE: dict[TransactionCategory, ExpenseNature] = {
+    TransactionCategory.HOUSING:       ExpenseNature.ESSENTIAL,
+    TransactionCategory.SUPERMARKET:   ExpenseNature.ESSENTIAL,
+    TransactionCategory.HEALTH:        ExpenseNature.ESSENTIAL,
+    TransactionCategory.TRANSPORT:     ExpenseNature.ESSENTIAL,
+    TransactionCategory.EDUCATION:     ExpenseNature.ESSENTIAL,
+    TransactionCategory.RESTAURANT:    ExpenseNature.DISCRETIONARY,
+    TransactionCategory.ENTERTAINMENT: ExpenseNature.DISCRETIONARY,
+    TransactionCategory.SHOPPING:      ExpenseNature.DISCRETIONARY,
+    TransactionCategory.TRAVEL:        ExpenseNature.DISCRETIONARY,
+    TransactionCategory.INVESTMENT:    ExpenseNature.INVESTMENT,
+}

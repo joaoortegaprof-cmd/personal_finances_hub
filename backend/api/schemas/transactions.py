@@ -7,7 +7,12 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.models.transaction import TransactionCategory, TransactionType
+from backend.models.transaction import (
+    CATEGORY_TO_NATURE,
+    ExpenseNature,
+    TransactionCategory,
+    TransactionType,
+)
 
 
 class TransactionCreate(BaseModel):
@@ -16,6 +21,7 @@ class TransactionCreate(BaseModel):
     transaction_date: date
     transaction_type: TransactionType
     category: TransactionCategory = TransactionCategory.OTHER
+    expense_nature: ExpenseNature | None = None
     account_id: int | None = None
     credit_card_id: int | None = None
     invoice_id: int | None = None
@@ -24,6 +30,16 @@ class TransactionCreate(BaseModel):
     is_recurring: bool = False
     is_emergency_fund: bool = False
 
+    def model_post_init(self, __context) -> None:
+        # Auto-classifica a natureza se não informada
+        if self.expense_nature is None:
+            if self.transaction_type == TransactionType.TRANSFER:
+                object.__setattr__(self, "expense_nature", ExpenseNature.TRANSFER)
+            elif self.transaction_type == TransactionType.EXPENSE:
+                nature = CATEGORY_TO_NATURE.get(self.category)
+                if nature is not None:
+                    object.__setattr__(self, "expense_nature", nature)
+
 
 class TransactionUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=255)
@@ -31,6 +47,7 @@ class TransactionUpdate(BaseModel):
     transaction_date: date | None = None
     transaction_type: TransactionType | None = None
     category: TransactionCategory | None = None
+    expense_nature: ExpenseNature | None = None
     account_id: int | None = None
     credit_card_id: int | None = None
     invoice_id: int | None = None
@@ -49,6 +66,7 @@ class TransactionOut(BaseModel):
     transaction_date: date
     transaction_type: TransactionType
     category: TransactionCategory
+    expense_nature: ExpenseNature | None
     account_id: int | None
     credit_card_id: int | None
     invoice_id: int | None

@@ -72,8 +72,8 @@ class TransactionsWorker(QThread):
     fora da thread principal, mantendo a UI responsiva.
     """
 
-    # (lista de transações, lista de contas, datas de início/fim usadas)
-    data_ready = pyqtSignal(list, list)
+    # (lista de transações, lista de contas, lista de cartões)
+    data_ready = pyqtSignal(list, list, list)
     error_occurred = pyqtSignal(str)
 
     def __init__(
@@ -94,7 +94,11 @@ class TransactionsWorker(QThread):
                 end_date=self._end,
             )
             accounts = self._client.get_accounts()
-            self.data_ready.emit(transactions, accounts)
+            try:
+                cards = self._client.get_cards()
+            except ApiError:
+                cards = []
+            self.data_ready.emit(transactions, accounts, cards)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
@@ -159,6 +163,37 @@ _TYPE_LABELS = {
     "Transferência": "transferencia",
 }
 
+# Mapeamento exibição → valor da API para natureza de despesa
+_NATURE_LABELS = {
+    "Essencial":     "essential",
+    "Supérfluo":     "discretionary",
+    "Investimento":  "investment",
+    "Transferência": "transfer",
+}
+_NATURE_DISPLAY = {v: k for k, v in _NATURE_LABELS.items()}
+
+# Cores de badge por natureza (bg_dark, fg_text)
+_NATURE_BADGE_COLORS: dict[str, tuple[str, str]] = {
+    "essential":     ("#1A3A2A", "#00C896"),
+    "discretionary": ("#3A2800", "#FFB347"),
+    "investment":    ("#1A2A3A", "#4A9EFF"),
+    "transfer":      ("#2A2D3E", "#8B90A7"),
+}
+
+# Auto-seleção de natureza pela categoria
+_CAT_TO_NATURE: dict[str, str] = {
+    "moradia":        "essential",
+    "supermercado":   "essential",
+    "saude":          "essential",
+    "transporte":     "essential",
+    "educacao":       "essential",
+    "restaurante":    "discretionary",
+    "entretenimento": "discretionary",
+    "compras":        "discretionary",
+    "viagem":         "discretionary",
+    "investimento":   "investment",
+}
+
 # Mapeamento exibição → valor da API para categorias
 _CATEGORY_LABELS = {
     "Salário": "salario",
@@ -189,11 +224,12 @@ class NewTransactionDialog(QDialog):
     Retorna os dados coletados via `get_payload()` após exec() == Accepted.
     """
 
-    def __init__(self, accounts: list[dict], parent: QWidget | None = None) -> None:
+    def __init__(self, accounts: list[dict], cards: list[dict] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Novo Lançamento")
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(480)
         self._accounts = accounts
+        self._cards    = cards or []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -236,6 +272,7 @@ class NewTransactionDialog(QDialog):
         self._type_combo = QComboBox()
         for label in _TYPE_LABELS:
             self._type_combo.addItem(label)
+        self._type_combo.currentIndexChanged.connect(self._on_type_changed)
         form.addRow("Tipo *", self._type_combo)
 
         # Categoria
@@ -245,7 +282,16 @@ class NewTransactionDialog(QDialog):
         # Pré-seleciona "Outros" para não confundir
         idx = list(_CATEGORY_LABELS.keys()).index("Outros")
         self._cat_combo.setCurrentIndex(idx)
+        self._cat_combo.currentIndexChanged.connect(self._on_category_changed)
         form.addRow("Categoria", self._cat_combo)
+
+        # Natureza (visível apenas para despesas)
+        self._nature_label = QLabel("Natureza")
+        self._nature_combo = QComboBox()
+        for label in ["Essencial", "Supérfluo", "Investimento"]:
+            self._nature_combo.addItem(label)
+        self._nature_row_label = self._nature_label
+        form.addRow(self._nature_label, self._nature_combo)
 
         # Conta bancária (opcional — transações de cartão não precisam)
         self._account_combo = QComboBox()
@@ -255,6 +301,27 @@ class NewTransactionDialog(QDialog):
             self._account_combo.addItem(label, userData=acc["id"])
         form.addRow("Conta", self._account_combo)
 
+        # Linha de crédito / Conta (visível apenas para despesas e transferências)
+        self._credit_line_label = QLabel("Linha de crédito")
+        self._credit_line_combo = QComboBox()
+        self._credit_line_combo.addItem("— Nenhuma —", userData=None)
+        # Contas no combo de crédito
+        for acc in self._accounts:
+            label = f"{acc['name']} ({acc['bank_name']}) — Conta"
+            self._credit_line_combo.addItem(label, userData=("account", acc["id"]))
+        # Cartões no combo de crédito
+        for card in self._cards:
+            label = f"{card['name']} - *{card.get('last_four_digits','????')} — Cartão"
+            self._credit_line_combo.addItem(label, userData=("card", card["id"], card))
+        self._credit_line_combo.currentIndexChanged.connect(self._on_credit_line_changed)
+        form.addRow(self._credit_line_label, self._credit_line_combo)
+
+        # Limite disponível (mostra quando cartão selecionado)
+        self._limit_label = QLabel("")
+        self._limit_label.setStyleSheet("color: #4A9EFF; font-size: 11px;")
+        self._limit_label.hide()
+        form.addRow("", self._limit_label)
+
         # Observações
         self._notes = QPlainTextEdit()
         self._notes.setPlaceholderText("Observações opcionais…")
@@ -262,6 +329,9 @@ class NewTransactionDialog(QDialog):
         form.addRow("Observações", self._notes)
 
         layout.addLayout(form)
+
+        # Estado inicial: campos condicionais baseados no tipo padrão (Receita)
+        self._on_type_changed()
 
         # Botões padrão: Cancelar e Salvar
         # QDialogButtonBox gera botões com labels corretos para o idioma do OS;
@@ -281,6 +351,39 @@ class NewTransactionDialog(QDialog):
             save_btn.style().polish(save_btn)
 
         layout.addWidget(buttons)
+
+    def _on_type_changed(self) -> None:
+        """Mostra campo Natureza apenas para despesas; linha de crédito para despesas/transferências."""
+        tx_type = self._type_combo.currentText()
+        is_expense  = tx_type == "Despesa"
+        needs_credit = tx_type in ("Despesa", "Transferência")
+        self._nature_label.setVisible(is_expense)
+        self._nature_combo.setVisible(is_expense)
+        self._credit_line_label.setVisible(needs_credit)
+        self._credit_line_combo.setVisible(needs_credit)
+        if not needs_credit:
+            self._limit_label.hide()
+
+    def _on_credit_line_changed(self) -> None:
+        """Mostra limite disponível quando um cartão é selecionado."""
+        data = self._credit_line_combo.currentData()
+        if data and isinstance(data, tuple) and data[0] == "card" and len(data) >= 3:
+            card = data[2]
+            limit = float(card.get("credit_limit", 0))
+            self._limit_label.setText(f"Limite total: R$ {limit:,.2f}".replace(",", "."))
+            self._limit_label.show()
+        else:
+            self._limit_label.hide()
+
+    def _on_category_changed(self) -> None:
+        """Auto-seleciona natureza com base na categoria escolhida."""
+        cat_api = _CATEGORY_LABELS.get(self._cat_combo.currentText(), "")
+        nature  = _CAT_TO_NATURE.get(cat_api)
+        if nature:
+            display = _NATURE_DISPLAY.get(nature, "")
+            idx = self._nature_combo.findText(display)
+            if idx >= 0:
+                self._nature_combo.setCurrentIndex(idx)
 
     def _on_accept(self) -> None:
         """Valida o formulário antes de aceitar o diálogo."""
@@ -304,19 +407,33 @@ class NewTransactionDialog(QDialog):
         qdate = self._date_edit.date()
         tx_date = date(qdate.year(), qdate.month(), qdate.day())
 
+        tx_type = _TYPE_LABELS[self._type_combo.currentText()]
         payload: dict[str, Any] = {
             "description": self._desc.text().strip(),
             # Serializa como string para compatibilidade JSON com Decimal
             "amount": f"{self._amount.value():.2f}",
             "transaction_date": tx_date.isoformat(),
-            "transaction_type": _TYPE_LABELS[self._type_combo.currentText()],
+            "transaction_type": tx_type,
             "category": _CATEGORY_LABELS[self._cat_combo.currentText()],
             "notes": self._notes.toPlainText().strip() or None,
         }
 
+        # Inclui natureza apenas para despesas
+        if tx_type == "despesa" and self._nature_combo.isVisible():
+            nature_display = self._nature_combo.currentText()
+            payload["expense_nature"] = _NATURE_LABELS.get(nature_display)
+
         account_id = self._account_combo.currentData()
         if account_id is not None:
             payload["account_id"] = account_id
+
+        # Linha de crédito selecionada (conta ou cartão)
+        cl_data = self._credit_line_combo.currentData()
+        if cl_data and isinstance(cl_data, tuple):
+            if cl_data[0] == "account" and not payload.get("account_id"):
+                payload["account_id"] = cl_data[1]
+            elif cl_data[0] == "card":
+                payload["credit_card_id"] = cl_data[1]
 
         return payload
 
@@ -324,8 +441,8 @@ class NewTransactionDialog(QDialog):
 class EditTransactionDialog(NewTransactionDialog):
     """Formulário modal para editar um lançamento existente (pré-preenchido)."""
 
-    def __init__(self, tx: dict[str, Any], accounts: list[dict], parent: QWidget | None = None) -> None:
-        super().__init__(accounts, parent)
+    def __init__(self, tx: dict[str, Any], accounts: list[dict], cards: list[dict] | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(accounts, cards, parent)
         self.setWindowTitle("Editar Lançamento")
         self._tx_id = tx["id"]
         self._prefill(tx)
@@ -370,6 +487,13 @@ class EditTransactionDialog(NewTransactionDialog):
 
         notes = tx.get("notes") or ""
         self._notes.setPlainText(notes)
+
+        nature = tx.get("expense_nature")
+        if nature:
+            display = _NATURE_DISPLAY.get(nature, "")
+            idx = self._nature_combo.findText(display)
+            if idx >= 0:
+                self._nature_combo.setCurrentIndex(idx)
 
 
 # ======================================================================
@@ -679,6 +803,7 @@ class TransactionsPage(QWidget):
         self._all_transactions: list[dict] = []
         self._filtered_transactions: list[dict] = []
         self._accounts: list[dict] = []
+        self._cards: list[dict] = []
         self._debts: list[dict] = []
 
         self._build_ui()
@@ -811,6 +936,14 @@ class TransactionsPage(QWidget):
         self._month_filter.currentIndexChanged.connect(self._on_month_changed)
         bar.addWidget(self._month_filter)
 
+        # Filtro de natureza — client-side
+        self._nature_filter = QComboBox()
+        self._nature_filter.addItems(
+            ["Todas as naturezas", "Essencial", "Supérfluo", "Investimento"]
+        )
+        self._nature_filter.currentIndexChanged.connect(self._apply_filters)
+        bar.addWidget(self._nature_filter)
+
         bar.addStretch()
 
         # Botão de ação principal
@@ -928,8 +1061,9 @@ class TransactionsPage(QWidget):
     # Slots
     # ------------------------------------------------------------------
 
-    def _on_data_ready(self, transactions: list[dict], accounts: list[dict]) -> None:
+    def _on_data_ready(self, transactions: list[dict], accounts: list[dict], cards: list[dict]) -> None:
         self._accounts = accounts
+        self._cards    = cards
 
         # Constrói mapa id→nome para exibir nome da conta na tabela
         self._account_map: dict[int, str] = {
@@ -956,8 +1090,9 @@ class TransactionsPage(QWidget):
         Client-side porque seria custoso refazer a requisição a cada tecla
         digitada no campo de busca.
         """
-        search_text = self._search.text().strip().lower()
-        type_filter = self._type_filter.currentText()
+        search_text   = self._search.text().strip().lower()
+        type_filter   = self._type_filter.currentText()
+        nature_filter = self._nature_filter.currentText()
 
         filtered = []
         for tx in self._all_transactions:
@@ -968,6 +1103,11 @@ class TransactionsPage(QWidget):
             if type_filter != "Todos os tipos":
                 api_type = _TYPE_LABELS.get(type_filter, "")
                 if tx.get("transaction_type") != api_type:
+                    continue
+            # Filtro de natureza: "Todas as naturezas" não filtra
+            if nature_filter != "Todas as naturezas":
+                api_nature = _NATURE_LABELS.get(nature_filter, "")
+                if tx.get("expense_nature") != api_nature:
                     continue
             filtered.append(tx)
 
@@ -989,10 +1129,13 @@ class TransactionsPage(QWidget):
                 else "#4A9EFF"
             )
 
+            expense_nature = tx.get("expense_nature")
+            cat_text = _CAT_DISPLAY.get(tx.get("category", ""), tx.get("category", ""))
+
             cells = [
                 (_fmt_date(tx.get("transaction_date", "")), "#E8EAED"),
                 (tx.get("description", ""), "#E8EAED"),
-                (_CAT_DISPLAY.get(tx.get("category", ""), tx.get("category", "")), "#8B90A7"),
+                (cat_text, "#8B90A7"),
                 (self._account_map.get(tx.get("account_id"), "—"), "#8B90A7"),
                 (_TYPE_DISPLAY.get(tx_type, tx_type), "#8B90A7"),
                 (_fmt_brl(amount if tx_type == "receita" else -amount if tx_type == "despesa" else amount), amount_color),
@@ -1001,6 +1144,10 @@ class TransactionsPage(QWidget):
             for col, (text, color) in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
+                if col == _COL_CAT and expense_nature and tx_type == "despesa":
+                    bg_dark, fg = _NATURE_BADGE_COLORS.get(expense_nature, ("#2A2D3E", "#8B90A7"))
+                    item.setBackground(QColor(bg_dark))
+                    item.setForeground(QColor(fg))
                 if col == _COL_AMOUNT:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -1037,7 +1184,7 @@ class TransactionsPage(QWidget):
     # ------------------------------------------------------------------
 
     def _open_edit_dialog(self, tx: dict) -> None:
-        dialog = EditTransactionDialog(tx, self._accounts, parent=self)
+        dialog = EditTransactionDialog(tx, self._accounts, self._cards, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         payload = dialog.get_payload()
@@ -1059,7 +1206,7 @@ class TransactionsPage(QWidget):
 
     def _open_new_dialog(self) -> None:
         """Abre o diálogo de novo lançamento. Salva via worker se confirmado."""
-        dialog = NewTransactionDialog(self._accounts, parent=self)
+        dialog = NewTransactionDialog(self._accounts, self._cards, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 

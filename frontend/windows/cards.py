@@ -69,8 +69,14 @@ class CardsWorker(QThread):
 
     def run(self) -> None:
         try:
-            cards = self._client.get_cards()
+            cards    = self._client.get_cards()
             accounts = self._client.get_accounts()
+            for card in cards:
+                try:
+                    lim = self._client.get_card_available_limit(card["id"])
+                    card["_available"] = lim.get("available", card.get("credit_limit", 0))
+                except ApiError:
+                    card["_available"] = card.get("credit_limit", 0)
             self.data_ready.emit(cards, accounts)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
@@ -204,13 +210,14 @@ _MONTHS_PT = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
               "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
 # Colunas da tabela de cartões
-_CC_NAME = 0
-_CC_BANK = 1
-_CC_LAST4 = 2
-_CC_LIMIT = 3
-_CC_CLOSE = 4
-_CC_DUE = 5
-_CC_ACTIONS = 6
+_CC_NAME    = 0
+_CC_BANK    = 1
+_CC_LAST4   = 2
+_CC_LIMIT   = 3
+_CC_AVAIL   = 4
+_CC_CLOSE   = 5
+_CC_DUE     = 6
+_CC_ACTIONS = 7
 
 # Colunas da tabela de faturas
 _INV_PERIOD = 0
@@ -455,7 +462,7 @@ class CardsPage(QWidget):
         outer.addWidget(scroll)
 
     def _build_cards_table(self) -> QTableWidget:
-        headers = ["Nome", "Banco", "Final", "Limite", "Fechamento", "Vencimento", "Ações"]
+        headers = ["Nome", "Banco", "Final", "Limite Total", "Lim. Disponível", "Fechamento", "Vencimento", "Ações"]
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -467,7 +474,7 @@ class CardsPage(QWidget):
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(_CC_NAME, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(_CC_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_CC_ACTIONS, 170)
+        table.setColumnWidth(_CC_ACTIONS, 220)
         return table
 
     def _build_invoices_table(self) -> QTableWidget:
@@ -516,19 +523,22 @@ class CardsPage(QWidget):
     def _populate_cards_table(self, cards: list[dict]) -> None:
         self._cards_table.setRowCount(len(cards))
         for row, card in enumerate(cards):
-            limit = float(card.get("credit_limit", 0))
+            limit     = float(card.get("credit_limit", 0))
+            available = float(card.get("_available", limit))
+            avail_color = "#00C896" if available >= limit * 0.3 else "#FFB347" if available > 0 else "#FF6B6B"
             data = [
                 (card.get("name", ""), "#E8EAED"),
                 (card.get("bank_name", ""), "#E8EAED"),
                 (f"••••{card.get('last_four_digits', '')}", "#8B90A7"),
                 (_fmt_brl(limit), "#4A9EFF"),
+                (_fmt_brl(available), avail_color),
                 (f"Dia {card.get('closing_day', '—')}", "#8B90A7"),
                 (f"Dia {card.get('due_day', '—')}", "#8B90A7"),
             ]
             for col, (text, color) in enumerate(data):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
-                if col == _CC_LIMIT:
+                if col in (_CC_LIMIT, _CC_AVAIL):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._cards_table.setItem(row, col, item)
 
@@ -537,17 +547,22 @@ class CardsPage(QWidget):
             actions_layout.setContentsMargins(4, 2, 4, 2)
             actions_layout.setSpacing(4)
 
+            fatura_btn = QPushButton("Ver fatura")
+            fatura_btn.setToolTip("Ver fatura atual do cartão")
+            fatura_btn.clicked.connect(lambda _, c=card: self._view_current_invoice(c))
+
             edit_btn = QPushButton("✏️")
             edit_btn.setToolTip("Editar cartão")
             edit_btn.setFixedWidth(36)
             edit_btn.clicked.connect(lambda _, c=card: self._open_edit_card_dialog(c))
 
-            del_btn = QPushButton("Excluir")
-            del_btn.setProperty("class", "danger")
-            del_btn.style().unpolish(del_btn)
-            del_btn.style().polish(del_btn)
+            del_btn = QPushButton("✕")
+            del_btn.setToolTip("Excluir cartão")
+            del_btn.setFixedWidth(28)
+            del_btn.setStyleSheet("QPushButton { color: #FF6B6B; }")
             del_btn.clicked.connect(lambda _, c=card: self._confirm_delete_card(c))
 
+            actions_layout.addWidget(fatura_btn)
             actions_layout.addWidget(edit_btn)
             actions_layout.addWidget(del_btn)
             self._cards_table.setCellWidget(row, _CC_ACTIONS, actions)
@@ -555,6 +570,16 @@ class CardsPage(QWidget):
     # ------------------------------------------------------------------
     # Dados — Faturas
     # ------------------------------------------------------------------
+
+    def _view_current_invoice(self, card: dict) -> None:
+        """Seleciona o cartão na tabela e carrega as faturas diretamente."""
+        card_id = card["id"]
+        for r in range(self._cards_table.rowCount()):
+            if r < len(self._cards) and self._cards[r]["id"] == card_id:
+                self._cards_table.selectRow(r)
+                break
+        self._selected_card_id = card_id
+        self._load_invoices(card_id)
 
     def _on_card_selected(self) -> None:
         rows = self._cards_table.selectedItems()

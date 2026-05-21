@@ -102,6 +102,65 @@ async def get_emergency_fund(db: AsyncSession = Depends(get_db)):
     )
 
 
+@router.get("/essential-cost")
+async def get_essential_cost(db: AsyncSession = Depends(get_db)):
+    """
+    Retorna o custo médio mensal com categorias essenciais dos últimos 3 meses.
+    Inclui breakdown por categoria para exibição detalhada no dashboard.
+    """
+    today = date.today()
+    three_months_ago_month = today.month - 3
+    three_months_ago_year  = today.year
+    if three_months_ago_month <= 0:
+        three_months_ago_month += 12
+        three_months_ago_year  -= 1
+    start_3m = date(three_months_ago_year, three_months_ago_month, 1)
+
+    essential_cats = [
+        TransactionCategory.HOUSING,
+        TransactionCategory.SUPERMARKET,
+        TransactionCategory.HEALTH,
+        TransactionCategory.TRANSPORT,
+        TransactionCategory.EDUCATION,
+    ]
+
+    result = await db.execute(
+        select(Transaction.category, func.coalesce(func.sum(Transaction.amount), 0))
+        .where(
+            Transaction.transaction_type == TransactionType.EXPENSE,
+            Transaction.category.in_(essential_cats),
+            Transaction.transaction_date >= start_3m,
+            Transaction.transaction_date <= today,
+        )
+        .group_by(Transaction.category)
+    )
+    # SQLAlchemy pode retornar o nome do enum ("HOUSING") ou o valor ("moradia")
+    # dependendo da versão; normalizamos para o nome do enum como chave.
+    by_cat: dict[str, float] = {}
+    for row in result:
+        raw = row[0]
+        if hasattr(raw, "name"):
+            key = raw.name           # enum object → usa nome
+        else:
+            # string bruta — pode ser nome ("HOUSING") ou valor ("moradia")
+            reverse = {c.value: c.name for c in TransactionCategory}
+            key = reverse.get(str(raw), str(raw))
+        by_cat[key] = float(row[1])
+
+    total_3m    = sum(by_cat.values())
+    monthly_avg = round(total_3m / 3, 2)
+
+    breakdown = [
+        {
+            "category":        cat.value,
+            "monthly_average": round(by_cat.get(cat.name, 0.0) / 3, 2),
+        }
+        for cat in essential_cats
+    ]
+
+    return {"monthly_average": monthly_avg, "breakdown": breakdown}
+
+
 @router.get("", response_model=list[TransactionOut])
 async def list_transactions(
     start_date: Annotated[date | None, Query(description="Início do período (inclusive)")] = None,

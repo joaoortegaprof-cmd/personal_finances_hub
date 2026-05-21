@@ -115,7 +115,7 @@ class DashboardWorker(QThread):
     Emite todos de uma vez para evitar múltiplas atualizações parciais.
     """
 
-    data_ready     = pyqtSignal(dict, dict, dict, list)  # dashboard, alerts, ef, debts
+    data_ready     = pyqtSignal(dict, dict, dict, list, dict)  # dashboard, alerts, ef, debts, essential_cost
     error_occurred = pyqtSignal(str)
 
     def __init__(self, client: ApiClient) -> None:
@@ -137,7 +137,12 @@ class DashboardWorker(QThread):
             except ApiError:
                 debts = []
 
-            self.data_ready.emit(dashboard, alerts, emergency_fund, debts)
+            try:
+                essential_cost = self._client.get_essential_cost()
+            except ApiError:
+                essential_cost = {"monthly_average": 0, "breakdown": []}
+
+            self.data_ready.emit(dashboard, alerts, emergency_fund, debts, essential_cost)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
@@ -416,32 +421,54 @@ class LineCanvas(FigureCanvas):
 class DonutCanvas(FigureCanvas):
     """
     Gráfico de donut com hover — distribuição por categoria ou por ativo.
+
+    O tooltip usa um QLabel flutuante (filho do canvas Qt) em vez de anotação
+    matplotlib, evitando problemas de z-order e renderização no backend qtagg.
     """
 
-    def __init__(self, figsize=(2.5, 2.0), parent=None) -> None:
-        self._fig = Figure(figsize=figsize, facecolor=_BG_RGB)
+    def __init__(self, figsize=(2.5, 2.0), parent=None, bg_color=None) -> None:
+        self._bg = bg_color if bg_color is not None else _BG_RGB
+        self._fig = Figure(figsize=figsize, facecolor=self._bg)
         super().__init__(self._fig)
         self.setParent(parent)
         self.setStyleSheet("background: transparent;")
         self.setMinimumHeight(195)
         self.setMaximumHeight(220)
         self._ax     = self._fig.add_subplot(111)
+        self._ax.set_facecolor(self._bg)
         self._wedges: list = []
         self._labels: list[str] = []
         self._values: list[float] = []
-        self._annot  = None
+
+        # Tooltip flutuante como widget Qt (não matplotlib) — fica sempre na frente
+        self._tooltip_label = QLabel(self)
+        self._tooltip_label.setStyleSheet(
+            "background-color: #2A2E4A;"
+            "color: #FFFFFF;"
+            "padding: 8px;"
+            "border-radius: 6px;"
+            "border: 1px solid #4A9EFF;"
+            "font-size: 11px;"
+        )
+        self._tooltip_label.setWordWrap(False)
+        self._tooltip_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._tooltip_label.hide()
+
         self.mpl_connect("motion_notify_event", self._on_hover)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._tooltip_label.hide()
+        super().leaveEvent(event)
 
     def update_data(self, distribution: list[dict]) -> None:
         ax = self._ax
         ax.clear()
-        ax.set_facecolor(_BG_RGB)
+        ax.set_facecolor(self._bg)
 
         if not distribution:
             ax.text(0.5, 0.5, "Sem dados", ha="center", va="center",
                     color=_TEXT_RGB, fontsize=10, transform=ax.transAxes)
             self._wedges = []
-            self._annot  = None
             self.draw()
             return
 
@@ -453,44 +480,38 @@ class DonutCanvas(FigureCanvas):
             self._values,
             colors=colors,
             startangle=90,
-            wedgeprops=dict(width=0.48, edgecolor=_BG_RGB, linewidth=1.5),
+            wedgeprops=dict(width=0.48, edgecolor=self._bg, linewidth=1.5),
         )
         self._wedges = wedges
-
-        self._annot = ax.annotate(
-            "", xy=(0, 0),
-            xytext=(0.05, -0.12),
-            textcoords="axes fraction",
-            fontsize=11,
-            color=(1.0, 1.0, 1.0),
-            ha="center",
-            bbox=dict(boxstyle="round,pad=0.3", fc=_GRID_RGB, ec="none", alpha=0.9),
-            visible=False,
-            zorder=999,
-        )
-        self._annot.set_zorder(999)
 
         self._fig.tight_layout(pad=0.2)
         self.draw()
 
     def _on_hover(self, event) -> None:
-        if event.inaxes != self._ax or not self._wedges or self._annot is None:
+        if event.inaxes != self._ax or not self._wedges:
+            self._tooltip_label.hide()
             return
         for i, wedge in enumerate(self._wedges):
             if wedge.contains_point([event.x, event.y]):
                 total = sum(self._values) or 1
                 pct   = self._values[i] / total * 100
-                self._annot.set_text(
-                    f"{self._labels[i]}\n"
-                    f"{_fmt_brl(self._values[i])}  ({pct:.1f}%)"
+                self._tooltip_label.setText(
+                    f"<b>{self._labels[i]}</b><br>"
+                    f"{_fmt_brl(self._values[i])}&nbsp;&nbsp;({pct:.1f}%)"
                 )
-                self._annot.set_zorder(999)
-                self._annot.set_visible(True)
-                self.figure.canvas.draw_idle()
+                self._tooltip_label.adjustSize()
+                # Converte coords matplotlib (origem: canto inferior esquerdo)
+                # para coords Qt (origem: canto superior esquerdo)
+                qt_x = int(event.x) + 12
+                qt_y = int(self.height() - event.y) - self._tooltip_label.height() - 12
+                # Limita para não sair dos limites do widget
+                qt_x = min(qt_x, self.width()  - self._tooltip_label.width()  - 4)
+                qt_y = max(qt_y, 4)
+                self._tooltip_label.move(qt_x, qt_y)
+                self._tooltip_label.raise_()
+                self._tooltip_label.show()
                 return
-        if self._annot.get_visible():
-            self._annot.set_visible(False)
-            self.figure.canvas.draw_idle()
+        self._tooltip_label.hide()
 
 
 # ======================================================================
@@ -777,7 +798,7 @@ class CategoryDonutWidget(QFrame):
         super().__init__()
         self.setObjectName("categoryDonutCard")
         self.setStyleSheet(
-            f"QFrame#categoryDonutCard {{ background: {_GRID}; border-radius: 8px; }}"
+            "QFrame#categoryDonutCard { background: #222640; border-radius: 8px; }"
         )
 
         outer = QVBoxLayout(self)
@@ -794,10 +815,12 @@ class CategoryDonutWidget(QFrame):
         row = QHBoxLayout()
         row.setSpacing(12)
 
-        # Donut
-        canvas = DonutCanvas(figsize=(2.5, 2.2))
+        # Donut — usa #222640 para coincidir com o fundo do card
+        _cat_bg = (34/255, 38/255, 64/255)  # #222640
+        canvas = DonutCanvas(figsize=(2.5, 2.2), bg_color=_cat_bg)
         canvas.setMinimumHeight(220)
         canvas.setMaximumHeight(260)
+        canvas.setStyleSheet("background-color: #222640;")
         distribution = [
             {"category": a["ticker"], "value": a["value"], "color": a["color"]}
             for a in assets
@@ -909,18 +932,17 @@ class DashboardPage(QWidget):
             row1.addWidget(c)
         self._content_layout.addLayout(row1)
 
-        # ── Linha 2: 3 cards mensais ───────────────────────────────────
+        # ── Linha 2: 4 cards mensais ───────────────────────────────────
         row2 = QHBoxLayout()
         row2.setSpacing(16)
-        self._card_receitas = SummaryCard("Receitas do Mês",  "#00C896")
-        self._card_despesas = SummaryCard("Despesas do Mês",  "#FF6B6B")
-        self._card_saldo    = SummaryCard("Saldo do Mês",     "#4A9EFF")
-        for c in [self._card_receitas, self._card_despesas, self._card_saldo]:
+        self._card_receitas  = SummaryCard("Receitas do Mês",   "#00C896")
+        self._card_despesas  = SummaryCard("Despesas do Mês",   "#FF6B6B")
+        self._card_saldo     = SummaryCard("Saldo do Mês",      "#4A9EFF")
+        self._card_essential = SummaryCard("💰 Custo Essencial", "#4A9EFF")
+        for c in [self._card_receitas, self._card_despesas, self._card_saldo, self._card_essential]:
             c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             c.setVisible(False)
             row2.addWidget(c)
-        # Espaçador para não esticar os 3 cards como se fossem 4
-        row2.addStretch(1)
         self._content_layout.addLayout(row2)
 
         # ── Seção de dívidas ───────────────────────────────────────────
@@ -1059,6 +1081,7 @@ class DashboardPage(QWidget):
         alerts: dict,
         emergency_fund: dict,
         debts: list,
+        essential_cost: dict,
     ) -> None:
         self._loading_label.setVisible(False)
         self._set_content_visible(True)
@@ -1114,6 +1137,14 @@ class DashboardPage(QWidget):
             _fmt_brl(balance),
             color="#00C896" if balance >= 0 else "#FF6B6B",
             sub=ref,
+        )
+
+        # ── Custo essencial ────────────────────────────────────────────
+        ec_avg = float(essential_cost.get("monthly_average", 0))
+        self._card_essential.set_value(
+            _fmt_brl(ec_avg),
+            color="#4A9EFF",
+            sub="Média dos últimos 3 meses",
         )
 
         # ── Dívidas ────────────────────────────────────────────────────
@@ -1181,6 +1212,7 @@ class DashboardPage(QWidget):
             self._card_receitas,
             self._card_despesas,
             self._card_saldo,
+            self._card_essential,
         ]
 
     def _set_content_visible(self, visible: bool) -> None:
