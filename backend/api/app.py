@@ -27,6 +27,7 @@ from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.debts import router as debts_router
 from backend.api.routes.dividends import router as dividends_router
 from backend.api.routes.market import router as market_router
+from backend.api.routes.recurring import router as recurring_router
 from backend.api.routes.simulation import router as simulation_router
 from backend.api.routes.tax import router as tax_router
 from backend.api.routes.transactions import router as transactions_router
@@ -93,6 +94,7 @@ app.include_router(market_router)
 app.include_router(debts_router)
 app.include_router(dividends_router)
 app.include_router(tax_router)
+app.include_router(recurring_router)
 app.include_router(simulation_router)
 
 

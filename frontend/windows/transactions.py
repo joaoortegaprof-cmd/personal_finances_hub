@@ -781,6 +781,221 @@ class DeleteDebtWorker(QThread):
 
 
 # ======================================================================
+# Workers de recorrentes
+# ======================================================================
+
+_PERIODICITY_LABELS = {
+    "monthly":    "Mensal",
+    "weekly":     "Semanal",
+    "biweekly":   "Quinzenal",
+    "bimonthly":  "Bimestral",
+    "quarterly":  "Trimestral",
+    "semiannual": "Semestral",
+    "annual":     "Anual",
+}
+_PERIODICITY_VALUES = {v: k for k, v in _PERIODICITY_LABELS.items()}
+
+_REC_COL_NAME       = 0
+_REC_COL_CATEGORY   = 1
+_REC_COL_AMOUNT     = 2
+_REC_COL_PERIOD     = 3
+_REC_COL_NEXT_DUE   = 4
+_REC_COL_MONTHLY_EQ = 5
+_REC_COL_ACTIONS    = 6
+
+_MONTHLY_FACTOR = {
+    "weekly": 4.33, "biweekly": 2.17, "monthly": 1.0,
+    "bimonthly": 0.5, "quarterly": 0.33, "semiannual": 0.17, "annual": 0.08,
+}
+
+
+class LoadRecurringWorker(QThread):
+    done           = pyqtSignal(list, dict)   # (expenses, summary)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            expenses = self._client._get("/recurring-expenses")
+            summary  = self._client._get("/recurring-expenses/summary")
+            self.done.emit(expenses, summary)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class SaveRecurringWorker(QThread):
+    saved          = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, payload: dict) -> None:
+        super().__init__()
+        self._client  = client
+        self._payload = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client._post("/recurring-expenses", self._payload)
+            self.saved.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class UpdateRecurringWorker(QThread):
+    updated        = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, expense_id: int, payload: dict) -> None:
+        super().__init__()
+        self._client     = client
+        self._expense_id = expense_id
+        self._payload    = payload
+
+    def run(self) -> None:
+        try:
+            result = self._client._put(f"/recurring-expenses/{self._expense_id}", self._payload)
+            self.updated.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class DeleteRecurringWorker(QThread):
+    done           = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, expense_id: int) -> None:
+        super().__init__()
+        self._client     = client
+        self._expense_id = expense_id
+
+    def run(self) -> None:
+        try:
+            self._client._delete(f"/recurring-expenses/{self._expense_id}")
+            self.done.emit()
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+# ======================================================================
+# Diálogo de recorrentes
+# ======================================================================
+
+class RecurringExpenseDialog(QDialog):
+    """Formulário para cadastrar ou editar um gasto recorrente."""
+
+    _CATEGORIES = [
+        "moradia", "supermercado", "transporte", "saude", "educacao",
+        "entretenimento", "assinatura", "seguros", "financeiro", "outros",
+    ]
+
+    def __init__(self, expense: dict | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self._edit_mode = expense is not None
+        self.setWindowTitle("Editar Recorrente" if self._edit_mode else "Nova Recorrente")
+        self.setMinimumWidth(460)
+        self._build_ui()
+        if expense:
+            self._prefill(expense)
+
+    def _build_ui(self) -> None:
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(16)
+
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._name = QLineEdit()
+        self._name.setPlaceholderText("Ex: Netflix, Aluguel, Plano de Saúde")
+        form.addRow("Nome:", self._name)
+
+        self._category = QComboBox()
+        self._category.addItems([c.capitalize() for c in self._CATEGORIES])
+        form.addRow("Categoria:", self._category)
+
+        self._amount = QDoubleSpinBox()
+        self._amount.setRange(0.01, 1_000_000)
+        self._amount.setDecimals(2)
+        self._amount.setPrefix("R$ ")
+        self._amount.setSingleStep(10)
+        self._amount.setGroupSeparatorShown(True)
+        form.addRow("Valor:", self._amount)
+
+        self._periodicity = QComboBox()
+        self._periodicity.addItems(list(_PERIODICITY_LABELS.values()))
+        self._periodicity.setCurrentText("Mensal")
+        form.addRow("Periodicidade:", self._periodicity)
+
+        self._next_due = QDateEdit()
+        self._next_due.setCalendarPopup(True)
+        self._next_due.setDisplayFormat("dd/MM/yyyy")
+        from PyQt6.QtCore import QDate
+        self._next_due.setDate(QDate.currentDate())
+        form.addRow("Próximo vencimento:", self._next_due)
+
+        self._notes = QLineEdit()
+        self._notes.setPlaceholderText("Observações (opcional)")
+        form.addRow("Notas:", self._notes)
+
+        lay.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._validate)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def _validate(self) -> None:
+        if not self._name.text().strip():
+            QMessageBox.warning(self, "Campo obrigatório", "Informe o nome do gasto.")
+            return
+        if self._amount.value() <= 0:
+            QMessageBox.warning(self, "Valor inválido", "O valor deve ser maior que zero.")
+            return
+        self.accept()
+
+    def _prefill(self, expense: dict) -> None:
+        self._name.setText(expense.get("name", ""))
+        cat = expense.get("category", "outros").lower()
+        idx = self._CATEGORIES.index(cat) if cat in self._CATEGORIES else 0
+        self._category.setCurrentIndex(idx)
+        self._amount.setValue(float(expense.get("amount", 0)))
+        period_val = expense.get("periodicity", "monthly")
+        period_lbl = _PERIODICITY_LABELS.get(period_val, "Mensal")
+        self._periodicity.setCurrentText(period_lbl)
+        due = expense.get("next_due_date", "")
+        if due:
+            from PyQt6.QtCore import QDate
+            self._next_due.setDate(QDate.fromString(due[:10], "yyyy-MM-dd"))
+        self._notes.setText(expense.get("notes") or "")
+
+    def get_payload(self) -> dict:
+        period_lbl = self._periodicity.currentText()
+        period_val = _PERIODICITY_VALUES.get(period_lbl, "monthly")
+        due = self._next_due.date().toString("yyyy-MM-dd")
+        return {
+            "name":          self._name.text().strip(),
+            "category":      self._CATEGORIES[self._category.currentIndex()],
+            "amount":        round(self._amount.value(), 2),
+            "periodicity":   period_val,
+            "next_due_date": due,
+            "notes":         self._notes.text().strip() or None,
+        }
+
+
+# ======================================================================
 # Diálogo de dívidas
 # ======================================================================
 
@@ -978,6 +1193,12 @@ class TransactionsPage(QWidget):
         self._update_debt_worker: UpdateDebtWorker | None = None
         self._delete_debt_worker: DeleteDebtWorker | None = None
 
+        self._load_recurring_worker: LoadRecurringWorker | None = None
+        self._save_recurring_worker: SaveRecurringWorker | None = None
+        self._update_recurring_worker: UpdateRecurringWorker | None = None
+        self._delete_recurring_worker: DeleteRecurringWorker | None = None
+        self._recurring_loaded: bool = False
+
         self._all_transactions: list[dict] = []
         self._filtered_transactions: list[dict] = []
         self._accounts: list[dict] = []
@@ -1004,6 +1225,7 @@ class TransactionsPage(QWidget):
         tabs = QTabWidget()
         tabs.addTab(self._build_transactions_tab(), "Lançamentos")
         tabs.addTab(self._build_debts_tab(), "Dívidas e Financiamentos")
+        tabs.addTab(self._build_recurring_tab(), "Recorrentes")
         tabs.currentChanged.connect(self._on_tab_changed)
         outer.addWidget(tabs)
 
@@ -1069,6 +1291,99 @@ class TransactionsPage(QWidget):
         outer.addWidget(self._debt_table)
         outer.addStretch()
         return page
+
+    def _build_recurring_tab(self) -> QWidget:
+        """Aba de gastos recorrentes: assinaturas, contratos e mensalidades."""
+        page = QWidget()
+        page.setObjectName("dashboardContent")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(32, 24, 32, 24)
+        outer.setSpacing(12)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(12)
+        new_rec_btn = QPushButton("+ Nova Recorrente")
+        new_rec_btn.setProperty("class", "primary")
+        new_rec_btn.style().unpolish(new_rec_btn)
+        new_rec_btn.style().polish(new_rec_btn)
+        new_rec_btn.clicked.connect(self._open_new_recurring_dialog)
+        toolbar.addStretch()
+        toolbar.addWidget(new_rec_btn)
+        outer.addLayout(toolbar)
+
+        # Cards de resumo
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(12)
+        self._rec_monthly_card = self._make_summary_card("Comprometido/mês", "—", "#FF6B6B")
+        self._rec_annual_card  = self._make_summary_card("Comprometido/ano", "—", "#FFB347")
+        self._rec_count_card   = self._make_summary_card("Ativos",           "—", "#4A9EFF")
+        for c in (self._rec_monthly_card, self._rec_annual_card, self._rec_count_card):
+            summary_row.addWidget(c)
+        outer.addLayout(summary_row)
+
+        # Alertas de vencimento
+        self._rec_alert_widget = QWidget()
+        self._rec_alert_widget.setVisible(False)
+        alert_lay = QVBoxLayout(self._rec_alert_widget)
+        alert_lay.setContentsMargins(0, 0, 0, 0)
+        alert_lay.setSpacing(4)
+        self._rec_alert_label = QLabel()
+        self._rec_alert_label.setStyleSheet(
+            "color: #FFB347; font-size: 12px; font-weight: 600; "
+            "background: #261A00; border-radius: 6px; padding: 8px 12px;"
+        )
+        self._rec_alert_label.setWordWrap(True)
+        alert_lay.addWidget(self._rec_alert_label)
+        outer.addWidget(self._rec_alert_widget)
+
+        # Loading
+        self._rec_loading_label = QLabel("Carregando recorrentes…")
+        self._rec_loading_label.setObjectName("loadingLabel")
+        self._rec_loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._rec_loading_label.setVisible(False)
+        outer.addWidget(self._rec_loading_label)
+
+        # Tabela
+        self._rec_table = self._build_recurring_table()
+        outer.addWidget(self._rec_table)
+        outer.addStretch()
+        return page
+
+    def _make_summary_card(self, title: str, value: str, color: str) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("simCard")
+        frame.setStyleSheet(
+            f"QFrame#simCard {{ background: #222640; border-radius: 8px; "
+            f"border-left: 3px solid {color}; padding: 4px; }}"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(2)
+        t = QLabel(title)
+        t.setStyleSheet("color: #C8CAD8; font-size: 11px;")
+        v = QLabel(value)
+        v.setObjectName("cardValue")
+        v.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 700;")
+        lay.addWidget(t)
+        lay.addWidget(v)
+        return frame
+
+    def _build_recurring_table(self) -> QTableWidget:
+        headers = ["Nome", "Categoria", "Valor", "Periodicidade",
+                   "Próx. Vencimento", "Equiv./mês", "Ações"]
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        hdr = table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(_REC_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(_REC_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_REC_COL_ACTIONS, 76)
+        return table
 
     def _build_debt_table(self) -> QTableWidget:
         headers = [
@@ -1479,6 +1794,8 @@ class TransactionsPage(QWidget):
     def _on_tab_changed(self, index: int) -> None:
         if index == 1 and not self._debts:
             self._load_debts()
+        elif index == 2 and not self._recurring_loaded:
+            self._load_recurring()
 
     def _load_debts(self) -> None:
         self._debt_loading_label.setVisible(True)
@@ -1581,6 +1898,175 @@ class TransactionsPage(QWidget):
             lambda msg: QMessageBox.critical(self, "Erro ao excluir dívida", msg)
         )
         self._delete_debt_worker.start()
+
+    # ------------------------------------------------------------------
+    # Aba Recorrentes: load + populate + CRUD
+    # ------------------------------------------------------------------
+
+    def _load_recurring(self) -> None:
+        if self._load_recurring_worker and self._load_recurring_worker.isRunning():
+            return
+        self._rec_loading_label.setVisible(True)
+        self._rec_table.setVisible(False)
+        self._load_recurring_worker = LoadRecurringWorker(self._client)
+        self._load_recurring_worker.done.connect(self._on_recurring_loaded)
+        self._load_recurring_worker.error_occurred.connect(
+            lambda msg: (
+                self._rec_loading_label.setText(f"Erro: {msg}"),
+                self._rec_loading_label.setVisible(True),
+            )
+        )
+        self._load_recurring_worker.start()
+
+    def _on_recurring_loaded(self, expenses: list[dict], summary: dict) -> None:
+        self._recurring_loaded = True
+        self._rec_loading_label.setVisible(False)
+        self._rec_table.setVisible(True)
+        self._populate_recurring_table(expenses)
+        self._update_recurring_summary(summary)
+
+    def _update_recurring_summary(self, summary: dict) -> None:
+        monthly = summary.get("monthly_total", 0)
+        annual  = summary.get("annual_total", 0)
+        count   = summary.get("active_count", 0)
+
+        def _brl(v):
+            return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        # Atualiza labels dos cards (segundo QLabel de cada frame)
+        for card, val in [
+            (self._rec_monthly_card, _brl(monthly)),
+            (self._rec_annual_card,  _brl(annual)),
+            (self._rec_count_card,   str(count)),
+        ]:
+            labels = card.findChildren(QLabel)
+            if len(labels) >= 2:
+                labels[1].setText(val)
+
+        # Alertas de vencimento próximo
+        upcoming = summary.get("upcoming", [])
+        overdue  = summary.get("overdue", [])
+        alerts: list[str] = []
+        if overdue:
+            names = ", ".join(e["name"] for e in overdue[:3])
+            suffix = f" (+{len(overdue)-3} mais)" if len(overdue) > 3 else ""
+            alerts.append(f"⚠️  Vencidos: {names}{suffix}")
+        if upcoming:
+            names = ", ".join(e["name"] for e in upcoming[:3])
+            suffix = f" (+{len(upcoming)-3} mais)" if len(upcoming) > 3 else ""
+            alerts.append(f"🔔  Vencem em 7 dias: {names}{suffix}")
+
+        if alerts:
+            self._rec_alert_label.setText("   |   ".join(alerts))
+            self._rec_alert_widget.setVisible(True)
+        else:
+            self._rec_alert_widget.setVisible(False)
+
+    def _populate_recurring_table(self, expenses: list[dict]) -> None:
+        today = date.today()
+        self._rec_table.setRowCount(len(expenses))
+        for row, exp in enumerate(expenses):
+            due_str    = exp.get("next_due_date", "")[:10]
+            period_val = exp.get("periodicity", "monthly")
+            amount     = float(exp.get("amount", 0))
+            monthly_eq = amount * _MONTHLY_FACTOR.get(period_val, 1.0)
+
+            # Cor da linha por proximidade do vencimento
+            try:
+                due_date = date.fromisoformat(due_str)
+                days_left = (due_date - today).days
+                if days_left < 0:
+                    row_bg = "#291111"   # vermelho — vencido
+                elif days_left <= 7:
+                    row_bg = "#261A00"   # laranja — vencendo em breve
+                else:
+                    row_bg = ""
+            except ValueError:
+                days_left = 999
+                row_bg = ""
+
+            cells = [
+                exp.get("name", ""),
+                exp.get("category", "outros").capitalize(),
+                f"R$ {amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                _PERIODICITY_LABELS.get(period_val, period_val),
+                due_str,
+                f"R$ {monthly_eq:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+            ]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if row_bg:
+                    item.setBackground(QColor(row_bg))
+                if col == _REC_COL_AMOUNT:
+                    item.setForeground(QColor("#FF6B6B"))
+                self._rec_table.setItem(row, col, item)
+
+            # Botões de ação
+            edit_btn, edit_container = _icon_btn("✏️", "Editar")
+            del_btn,  del_container  = _icon_btn("🗑️", "Excluir")
+            edit_btn.clicked.connect(lambda _, e=exp: self._open_edit_recurring_dialog(e))
+            del_btn.clicked.connect(lambda _, e=exp: self._delete_recurring(e))
+
+            actions = QWidget()
+            act_lay = QHBoxLayout(actions)
+            act_lay.setContentsMargins(4, 2, 4, 2)
+            act_lay.setSpacing(2)
+            act_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            act_lay.addWidget(edit_btn)
+            act_lay.addWidget(del_btn)
+            self._rec_table.setCellWidget(row, _REC_COL_ACTIONS, actions)
+
+    def _open_new_recurring_dialog(self) -> None:
+        dialog = RecurringExpenseDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_payload()
+        if self._save_recurring_worker and self._save_recurring_worker.isRunning():
+            return
+        self._save_recurring_worker = SaveRecurringWorker(self._client, payload)
+        self._save_recurring_worker.saved.connect(lambda _: self._reload_recurring())
+        self._save_recurring_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao salvar", msg)
+        )
+        self._save_recurring_worker.start()
+
+    def _open_edit_recurring_dialog(self, expense: dict) -> None:
+        dialog = RecurringExpenseDialog(expense=expense, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.get_payload()
+        if self._update_recurring_worker and self._update_recurring_worker.isRunning():
+            return
+        self._update_recurring_worker = UpdateRecurringWorker(
+            self._client, expense["id"], payload
+        )
+        self._update_recurring_worker.updated.connect(lambda _: self._reload_recurring())
+        self._update_recurring_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
+        )
+        self._update_recurring_worker.start()
+
+    def _delete_recurring(self, expense: dict) -> None:
+        reply = QMessageBox.question(
+            self, "Confirmar exclusão",
+            f"Deseja excluir «{expense.get('name', '')}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self._delete_recurring_worker and self._delete_recurring_worker.isRunning():
+            return
+        self._delete_recurring_worker = DeleteRecurringWorker(self._client, expense["id"])
+        self._delete_recurring_worker.done.connect(self._reload_recurring)
+        self._delete_recurring_worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "Erro ao excluir", msg)
+        )
+        self._delete_recurring_worker.start()
+
+    def _reload_recurring(self) -> None:
+        self._recurring_loaded = False
+        self._load_recurring()
 
 
 # ======================================================================

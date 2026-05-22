@@ -156,3 +156,7 @@ async def init_db() -> None:
             await conn.execute(
                 text("ALTER TABLE transactions ADD COLUMN expense_nature VARCHAR")
             )
+
+        # Migração: tabela recurring_expenses (criada via create_all acima,
+        # mas garantida aqui caso o banco seja pré-existente sem a tabela)
+        from backend.models.recurring import RecurringExpense  # noqa: F401
