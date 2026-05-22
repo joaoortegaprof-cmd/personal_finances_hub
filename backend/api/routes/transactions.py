@@ -211,6 +211,33 @@ async def create_transaction(payload: TransactionCreate, db: AsyncSession = Depe
     return await repo.create(transaction)
 
 
+# IMPORTANTE: rotas estáticas devem vir ANTES de /{transaction_id}
+# para o FastAPI não capturar "expense-patterns" como um ID inteiro.
+
+@router.get("/expense-patterns")
+async def get_expense_patterns(db: AsyncSession = Depends(get_db)):
+    """
+    Analisa o padrão de gastos do mês atual vs média dos 3 meses anteriores.
+
+    Retorna por categoria: gasto atual, média 3 meses, variação % e tendência.
+    Categorias com variação > 50% são marcadas como anomalia (is_anomaly=true).
+    """
+    from backend.services.expense_pattern_service import ExpensePatternService
+    service = ExpensePatternService(db)
+    patterns = await service.analyse()
+    return [
+        {
+            "category":      p.category,
+            "current_month": p.current_month,
+            "avg_3m":        p.avg_3m,
+            "change_pct":    p.change_pct,
+            "trend":         p.trend,
+            "is_anomaly":    p.is_anomaly,
+        }
+        for p in patterns
+    ]
+
+
 @router.get("/{transaction_id}", response_model=TransactionOut)
 async def get_transaction(transaction_id: int, db: AsyncSession = Depends(get_db)):
     """Retorna um lançamento pelo ID."""
@@ -242,27 +269,3 @@ async def delete_transaction(transaction_id: int, db: AsyncSession = Depends(get
     deleted = await repo.delete(transaction_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transação não encontrada")
-
-
-@router.get("/expense-patterns")
-async def get_expense_patterns(db: AsyncSession = Depends(get_db)):
-    """
-    Analisa o padrão de gastos do mês atual vs média dos 3 meses anteriores.
-
-    Retorna por categoria: gasto atual, média 3 meses, variação % e tendência.
-    Categorias com variação > 50% são marcadas como anomalia (is_anomaly=true).
-    """
-    from backend.services.expense_pattern_service import ExpensePatternService
-    service = ExpensePatternService(db)
-    patterns = await service.analyse()
-    return [
-        {
-            "category":      p.category,
-            "current_month": p.current_month,
-            "avg_3m":        p.avg_3m,
-            "change_pct":    p.change_pct,
-            "trend":         p.trend,
-            "is_anomaly":    p.is_anomaly,
-        }
-        for p in patterns
-    ]

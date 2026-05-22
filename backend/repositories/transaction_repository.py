@@ -202,7 +202,11 @@ class TransactionRepository(BaseRepository[Transaction]):
             .group_by(Transaction.category)
         )
         rows = (await self._session.execute(stmt)).all()
-        return {str(row.category): float(row.total) for row in rows}
+        # row.category pode ser um enum ou string; extrai o valor legível
+        return {
+            (row.category.value if hasattr(row.category, "value") else str(row.category)): float(row.total)
+            for row in rows
+        }
 
     # -----------------------------------------------------------------
     # Transações recorrentes

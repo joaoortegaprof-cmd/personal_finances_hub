@@ -581,9 +581,11 @@ class ReportsPage(QWidget):
 
     def _build_opportunity_cost_body(self, data: dict) -> str:
         """
-        Compara o custo investido na carteira com o que teria rendido em renda fixa (CDI).
+        Compara o custo investido na carteira de renda variável com o CDI no período.
 
-        Mostra: total investido, valor hipotético no CDI, custo de oportunidade.
+        Usa as chaves reais retornadas por GET /portfolio/opportunity-cost:
+          total_invested_equity, cdi_return_pct, portfolio_return_pct, alpha_pct,
+          period_months, message.
         """
         opp: dict = data.get("opportunity", {})
         assets: list[dict] = data.get("assets", [])
@@ -591,18 +593,26 @@ class ReportsPage(QWidget):
         if not opp:
             return "<p>Não foi possível calcular o custo de oportunidade. Verifique a conexão com a API.</p>"
 
-        def fmt(v: float) -> str:
+        def fmt(v: float | None, suffix: str = "") -> str:
+            if v is None:
+                return "—"
+            return f"{v:,.2f}{suffix}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        def fmtbrl(v: float | None) -> str:
+            if v is None:
+                return "—"
             return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-        total_invested  = float(opp.get("total_invested", 0))
-        benchmark_value = float(opp.get("benchmark_value", 0))
-        portfolio_cost  = float(opp.get("portfolio_cost", total_invested))
-        opp_cost        = float(opp.get("opportunity_cost", 0))
-        rate_annual     = float(opp.get("benchmark_rate_annual", 0.1275)) * 100
+        total_equity    = opp.get("total_invested_equity")
+        cdi_pct         = opp.get("cdi_return_pct")
+        port_pct        = opp.get("portfolio_return_pct")
+        alpha           = opp.get("alpha_pct")
+        period_months   = opp.get("period_months", 12)
+        message         = opp.get("message", "")
 
-        # Cor: positivo = carteira ficou atrás do CDI (vermelho)
-        opp_color = "#b71c1c" if opp_cost > 0 else "#0a7a4a"
-        opp_sign  = "+" if opp_cost > 0 else ""
+        # Alpha: positivo = carteira superou CDI (verde), negativo = ficou atrás (vermelho)
+        alpha_color = "#0a7a4a" if (alpha or 0) >= 0 else "#b71c1c"
+        alpha_sign  = "+" if (alpha or 0) >= 0 else ""
 
         assets_rows = "".join(
             f"<tr><td>{a.get('ticker','—')}</td><td>{a.get('name','')}</td>"
@@ -613,23 +623,28 @@ class ReportsPage(QWidget):
         return f"""
         <div class="summary-box">
           <div class="summary-item">
-            <div class="summary-label">Total investido (custo)</div>
-            <div class="summary-value">{fmt(total_invested)}</div>
+            <div class="summary-label">Capital em renda variável</div>
+            <div class="summary-value">{fmtbrl(total_equity)}</div>
           </div>
           <div class="summary-item">
-            <div class="summary-label">Benchmark (CDI {rate_annual:.2f}% a.a.)</div>
-            <div class="summary-value">{fmt(benchmark_value)}</div>
+            <div class="summary-label">CDI no período ({period_months}m)</div>
+            <div class="summary-value">{fmt(cdi_pct, '%')}</div>
           </div>
           <div class="summary-item">
-            <div class="summary-label">Custo de oportunidade</div>
-            <div class="summary-value" style="color:{opp_color};">{opp_sign}{fmt(opp_cost)}</div>
+            <div class="summary-label">Retorno da carteira</div>
+            <div class="summary-value">{fmt(port_pct, '%') if port_pct is not None else 'Cotação necessária'}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Alpha (carteira − CDI)</div>
+            <div class="summary-value" style="color:{alpha_color};">
+              {(alpha_sign + fmt(alpha, '%')) if alpha is not None else 'Cotação necessária'}
+            </div>
           </div>
         </div>
-        <p style="font-size:12px; color:#555; margin-top:16px;">
-          O <strong>custo de oportunidade</strong> mostra quanto a mais você teria hoje
-          se tivesse alocado o capital em CDI em vez da carteira atual.
-          Valor positivo significa que o CDI teria rendido mais; negativo significa
-          que sua carteira superou o benchmark.
+        <p style="font-size:12px; color:#555; margin-top:16px;">{message}</p>
+        <p style="font-size:12px; color:#555;">
+          <strong>Alpha positivo</strong> = carteira superou o CDI no período.<br>
+          <strong>Alpha negativo</strong> = CDI teria rendido mais que a carteira.
         </p>
         <h2>Ativos na carteira</h2>
         <table>
