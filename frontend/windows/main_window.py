@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QSize, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from frontend.components.icons import icon as _svg_icon
 from frontend.components.signals import app_signals
 from frontend.windows.accounts import AccountsPage
 from frontend.windows.cards import CardsPage
@@ -77,6 +78,38 @@ _NAV_ITEMS: list[tuple[str, int]] = [
     ("Configurações",8),
     ("Simulações",   9),
 ]
+
+# Ícones SVG para cada item da sidebar (mesma ordem de _NAV_ITEMS)
+_NAV_ICONS: list[str] = [
+    "home",        # Dashboard
+    "dollar",      # Lançamentos
+    "wallet",      # Contas
+    "card",        # Cartões
+    "trending_up", # Investimentos
+    "market",      # Mercado
+    "chart",       # Relatórios
+    "tax",         # IR e DARF
+    "settings",    # Configurações
+    "simulation",  # Simulações
+]
+
+
+def _nav_icon(icon_name: str) -> QIcon:
+    """
+    Cria um QIcon dual-state para botões de navegação:
+      - State.Off (desmarcado): cinza #8B90A7
+      - State.On  (marcado/checked): verde #00C896 — combina com o tema do navButton:checked
+    """
+    ic = QIcon()
+    ic.addPixmap(
+        _svg_icon(icon_name, "#8B90A7", 16).pixmap(16, 16),
+        QIcon.Mode.Normal, QIcon.State.Off,
+    )
+    ic.addPixmap(
+        _svg_icon(icon_name, "#00C896", 16).pixmap(16, 16),
+        QIcon.Mode.Normal, QIcon.State.On,
+    )
+    return ic
 
 
 class MainWindow(QMainWindow):
@@ -184,11 +217,13 @@ class MainWindow(QMainWindow):
 
         # Botões de navegação
         self._nav_buttons: list[QPushButton] = []
-        for label, index in _NAV_ITEMS:
-            btn = QPushButton(label)
+        for (label, index), icon_name in zip(_NAV_ITEMS, _NAV_ICONS):
+            btn = QPushButton(f"  {label}")      # dois espaços de recuo após o ícone
             btn.setObjectName("navButton")
             btn.setCheckable(True)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # evita borda de foco no estilo
+            btn.setIcon(_nav_icon(icon_name))
+            btn.setIconSize(QSize(16, 16))       # ícone 16 × 16 px, alinhado ao texto
             # Captura o índice correto para o closure com argumento default
             btn.clicked.connect(lambda _checked, i=index: self._navigate(i))
             layout.addWidget(btn)
@@ -197,7 +232,8 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         # Rodapé da sidebar: botão de atualização global
-        refresh_btn = QPushButton("↻  Atualizar")
+        refresh_btn = QPushButton("  Atualizar")
+        refresh_btn.setIcon(_svg_icon("refresh", "#8B90A7", 14))
         refresh_btn.setObjectName("navRefreshButton")
         refresh_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         refresh_btn.clicked.connect(self._refresh_current_page)
@@ -252,6 +288,11 @@ class MainWindow(QMainWindow):
         self._transactions_page = TransactionsPage()
         stack.addWidget(self._transactions_page)
 
+        # Sinal cross-page: AccountsPage → TransactionsPage
+        app_signals.open_new_transaction_for_account.connect(
+            self._open_transaction_for_account
+        )
+
         # 2 — Contas
         self._accounts_page = AccountsPage()
         stack.addWidget(self._accounts_page)
@@ -301,6 +342,14 @@ class MainWindow(QMainWindow):
         load = getattr(page, "load_data", None)
         if callable(load):
             load()
+
+    def _open_transaction_for_account(self, account_id: int) -> None:
+        """
+        Navega para Lançamentos e abre o diálogo pré-selecionando a conta.
+        Chamado pelo sinal open_new_transaction_for_account emitido por AccountCard.
+        """
+        self._navigate(1)                                          # vai para Lançamentos
+        self._transactions_page.open_new_for_account(account_id)  # abre diálogo pré-selecionado
 
     def _navigate(self, index: int) -> None:
         """Troca de página e sincroniza o estado visual da sidebar e do header."""

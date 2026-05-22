@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.icons import icon as _svg_icon
 
 
 # ======================================================================
@@ -223,14 +224,16 @@ class ReportsPage(QWidget):
 
         # Botões
         btn_row = QHBoxLayout()
-        gen_btn = QPushButton("Gerar Relatório")
+        gen_btn = QPushButton(" Gerar Relatório")
+        gen_btn.setIcon(_svg_icon("chart", "#FFFFFF", 14))
         gen_btn.setProperty("class", "primary")
         gen_btn.style().unpolish(gen_btn)
         gen_btn.style().polish(gen_btn)
         gen_btn.clicked.connect(self._generate)
         btn_row.addWidget(gen_btn)
 
-        self._export_btn = QPushButton("Salvar em PDF")
+        self._export_btn = QPushButton(" Salvar em PDF")
+        self._export_btn.setIcon(_svg_icon("export", "#C8CAD8", 14))
         self._export_btn.setEnabled(False)
         self._export_btn.clicked.connect(self._export_pdf)
         btn_row.addWidget(self._export_btn)

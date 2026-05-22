@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.icons import icon as _svg_icon
 
 # -----------------------------------------------------------------
 # Constantes visuais
@@ -424,7 +425,8 @@ class RetirementTab(QWidget):
 
         # Botões
         btn_row = QHBoxLayout()
-        self._simulate_btn = QPushButton("▶  Simular")
+        self._simulate_btn = QPushButton("  Simular")
+        self._simulate_btn.setIcon(_svg_icon("trending_up", "#FFFFFF", 16))
         self._simulate_btn.setProperty("class", "primary")
         self._simulate_btn.style().unpolish(self._simulate_btn)
         self._simulate_btn.style().polish(self._simulate_btn)
@@ -718,10 +720,12 @@ class GoalCard(QFrame):
         # Botões de ação
         btns = QHBoxLayout()
         btns.addStretch()
-        edit_btn = QPushButton("✏️")
+        edit_btn = QPushButton()
+        edit_btn.setIcon(_svg_icon("edit", "#C8CAD8", 12))
         edit_btn.setFixedSize(28, 28)
         edit_btn.clicked.connect(lambda: self.edit_requested.emit(self._goal))
-        del_btn = QPushButton("🗑️")
+        del_btn = QPushButton()
+        del_btn.setIcon(_svg_icon("delete", "#FF6B6B", 12))
         del_btn.setFixedSize(28, 28)
         del_btn.clicked.connect(lambda: self.delete_requested.emit(self._goal))
         btns.addWidget(edit_btn)
@@ -947,7 +951,8 @@ class DebtPayoffTab(QWidget):
         self._extra_slider.setTickInterval(100)
         left.addWidget(extra_row)
 
-        compare_btn = QPushButton("📊  Comparar cenários")
+        compare_btn = QPushButton("  Comparar cenários")
+        compare_btn.setIcon(_svg_icon("chart", "#FFFFFF", 16))
         compare_btn.setProperty("class", "primary")
         compare_btn.style().unpolish(compare_btn)
         compare_btn.style().polish(compare_btn)

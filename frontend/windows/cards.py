@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.icons import icon as _svg_icon
 from frontend.components.signals import app_signals
 
 
@@ -655,12 +656,14 @@ class CardsPage(QWidget):
         ap_layout.addWidget(self._selected_card_label)
         ap_layout.addStretch()
 
-        edit_btn = QPushButton("✏️  Editar")
+        edit_btn = QPushButton("  Editar")
+        edit_btn.setIcon(_svg_icon("edit", "#C8CAD8", 14))
         edit_btn.setToolTip("Editar cartão selecionado")
         edit_btn.clicked.connect(self._edit_selected_card)
         ap_layout.addWidget(edit_btn)
 
-        del_btn = QPushButton("🗑️  Excluir")
+        del_btn = QPushButton("  Excluir")
+        del_btn.setIcon(_svg_icon("delete", "#FF6B6B", 14))
         del_btn.setToolTip("Excluir cartão selecionado")
         del_btn.setStyleSheet("QPushButton { color: #FF6B6B; }")
         del_btn.clicked.connect(self._delete_selected_card)

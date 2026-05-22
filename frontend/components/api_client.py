@@ -287,6 +287,10 @@ class ApiClient:
         """Atualiza um lançamento existente."""
         return self._put(f"/transactions/{transaction_id}", payload)
 
+    def delete_transaction(self, transaction_id: int) -> None:
+        """Remove um lançamento permanentemente."""
+        self._delete(f"/transactions/{transaction_id}")
+
     # ------------------------------------------------------------------
     # Ativos — escrita
     # ------------------------------------------------------------------

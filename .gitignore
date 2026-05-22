@@ -4,3 +4,12 @@ finances/
 .env
 *.env
 !.env.example
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Banco de dados local e logs de runtime
+*.db
+*.sqlite3
+data/logs/

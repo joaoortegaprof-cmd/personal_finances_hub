@@ -468,11 +468,11 @@ QDoubleSpinBox {
     background-color: #2A2E4A;
     border: 1px solid #2E3250;
     border-radius: 8px;
-    padding: 6px 10px;
+    padding: 8px 10px;
     color: #FFFFFF;
     font-size: 13px;
     font-weight: 700;
-    min-height: 32px;
+    min-height: 40px;   /* aumentado de 32 → 40 px */
 }
 
 QSpinBox:focus,
@@ -487,8 +487,8 @@ QDoubleSpinBox::up-button,
 QDoubleSpinBox::down-button {
     background-color: #3D4466;
     border: none;
-    width: 32px;
-    height: 16px;
+    width: 36px;        /* aumentado de 32 → 36 px */
+    height: 20px;       /* aumentado de 16 → 20 px — zona de clique mais confortável */
     border-radius: 4px;
 }
 
@@ -499,14 +499,21 @@ QDoubleSpinBox::down-button:hover {
     background-color: #4A5270;
 }
 
+QSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed,
+QDoubleSpinBox::up-button:pressed,
+QDoubleSpinBox::down-button:pressed {
+    background-color: #5A6280;
+}
+
 QSpinBox::up-arrow,
 QDoubleSpinBox::up-arrow {
-    width: 8px;
-    height: 8px;
+    width: 10px;        /* aumentado de 8 → 10 px */
+    height: 10px;
 }
 
 QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
-    width: 8px;
-    height: 8px;
+    width: 10px;        /* aumentado de 8 → 10 px */
+    height: 10px;
 }

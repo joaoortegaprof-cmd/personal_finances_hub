@@ -65,6 +65,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.icons import icon as _svg_icon
 
 
 # ======================================================================
@@ -357,7 +358,8 @@ class NewAssetDialog(QDialog):
         self._ticker_combo.setMinimumWidth(180)
         self._ticker_combo.activated.connect(self._on_ticker_activated)
         ticker_row.addWidget(self._ticker_combo, 1)
-        lookup_btn = QPushButton("↻")
+        lookup_btn = QPushButton()
+        lookup_btn.setIcon(_svg_icon("refresh", "#C8CAD8", 14))
         lookup_btn.setToolTip("Buscar nome do ticker")
         lookup_btn.setFixedWidth(36)
         lookup_btn.clicked.connect(self._lookup_name)
@@ -1591,7 +1593,8 @@ class InvestmentsPage(QWidget):
             cell_lay = QHBoxLayout(cell_w)
             cell_lay.setContentsMargins(4, 2, 4, 2)
             cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            edit_btn = QPushButton("✏️")
+            edit_btn = QPushButton()
+            edit_btn.setIcon(_svg_icon("edit", "#C8CAD8", 14))
             edit_btn.setFixedSize(32, 32)
             edit_btn.setToolTip("Editar ativo")
             edit_btn.clicked.connect(lambda _, aid=asset_id: self._open_edit_asset_dialog(aid))

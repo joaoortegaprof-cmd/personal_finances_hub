@@ -59,6 +59,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.icons import icon as _svg_icon
 from frontend.components.signals import app_signals
 from frontend.windows.settings_page import load_settings
 
@@ -1089,8 +1090,9 @@ class DashboardPage(QWidget):
         self._hist_title = QLabel("Histórico de Alertas")
         self._hist_title.setObjectName("sectionTitle")
         self._hist_title.setVisible(False)
-        self._hist_toggle_btn = QPushButton("▼ Mostrar")
-        self._hist_toggle_btn.setFixedWidth(100)
+        self._hist_toggle_btn = QPushButton(" Mostrar")
+        self._hist_toggle_btn.setIcon(_svg_icon("chevron_down", "#8B90A7", 12))
+        self._hist_toggle_btn.setFixedWidth(110)
         self._hist_toggle_btn.setCheckable(True)
         self._hist_toggle_btn.setChecked(False)
         self._hist_toggle_btn.setVisible(False)
@@ -1402,7 +1404,12 @@ class DashboardPage(QWidget):
     def _toggle_history(self, checked: bool) -> None:
         """Mostra/oculta o container do histórico de alertas."""
         self._hist_container.setVisible(checked)
-        self._hist_toggle_btn.setText("▲ Ocultar" if checked else "▼ Mostrar")
+        if checked:
+            self._hist_toggle_btn.setText(" Ocultar")
+            self._hist_toggle_btn.setIcon(_svg_icon("chevron_up", "#8B90A7", 12))
+        else:
+            self._hist_toggle_btn.setText(" Mostrar")
+            self._hist_toggle_btn.setIcon(_svg_icon("chevron_down", "#8B90A7", 12))
 
     def _populate_legend(self, top5: list[dict], total: float) -> None:
         while self._legend_layout.count():

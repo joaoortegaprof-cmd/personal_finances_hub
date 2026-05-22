@@ -65,6 +65,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.icons import icon as _svg_icon, category_icon as _cat_icon
 from frontend.components.signals import app_signals
 
 
@@ -326,6 +327,7 @@ class NewTransactionDialog(QDialog):
         accounts: list[dict],
         cards: list[dict] | None = None,
         parent: QWidget | None = None,
+        preselect_account_id: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Novo Lançamento")
@@ -333,6 +335,7 @@ class NewTransactionDialog(QDialog):
         self._accounts = accounts
         self._cards    = cards or []
         self._tx_type: str | None = None
+        self._preselect_account_id = preselect_account_id
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -524,6 +527,12 @@ class NewTransactionDialog(QDialog):
         self._save_btn.setVisible(True)
         self._save_btn.style().unpolish(self._save_btn)
         self._save_btn.style().polish(self._save_btn)
+        # Pré-seleciona conta quando iniciado a partir de um card de conta
+        if self._preselect_account_id is not None:
+            for i in range(self._account_combo.count()):
+                if self._account_combo.itemData(i) == self._preselect_account_id:
+                    self._account_combo.setCurrentIndex(i)
+                    break
 
     def _go_to_type_page(self) -> None:
         self._stack.setCurrentIndex(0)
@@ -689,14 +698,13 @@ _TYPE_DISPLAY = {
 }
 _CAT_DISPLAY = {v: k for k, v in _CATEGORY_LABELS.items()}
 
-# Colunas da tabela (índices usados em todas as referências)
-_COL_DATE = 0
-_COL_DESC = 1
-_COL_CAT = 2
-_COL_ACCOUNT = 3
-_COL_TYPE = 4
-_COL_AMOUNT = 5
-_COL_ACTIONS = 6
+# Colunas da tabela (nova ordem: descrição-com-ícone | conta | data | natureza | valor | ações)
+_COL_DESC    = 0   # widget: ícone SVG de categoria + texto da descrição
+_COL_ACCOUNT = 1
+_COL_DATE    = 2
+_COL_NATURE  = 3   # widget: badge colorido de natureza / tipo
+_COL_AMOUNT  = 4
+_COL_ACTIONS = 5   # widget: edit + delete
 
 # Colunas da tabela de dívidas
 _DEBT_COL_NAME = 0
@@ -1523,7 +1531,8 @@ class TransactionsPage(QWidget):
         self._cf_months_spin.setValue(3)
         self._cf_months_spin.setSuffix(" meses")
 
-        self._cf_update_btn = QPushButton("↻  Atualizar")
+        self._cf_update_btn = QPushButton("  Atualizar")
+        self._cf_update_btn.setIcon(_svg_icon("refresh", "#C8CAD8", 14))
         self._cf_update_btn.clicked.connect(self._reload_cashflow)
 
         controls.addWidget(mode_lbl)
@@ -1630,7 +1639,8 @@ class TransactionsPage(QWidget):
         bar.addStretch()
 
         # Botão de ação principal
-        new_btn = QPushButton("+ Novo Lançamento")
+        new_btn = QPushButton(" Novo Lançamento")
+        new_btn.setIcon(_svg_icon("add_circle", "#FFFFFF", 16))
         new_btn.setProperty("class", "primary")
         new_btn.style().unpolish(new_btn)
         new_btn.style().polish(new_btn)
@@ -1651,7 +1661,8 @@ class TransactionsPage(QWidget):
         lay.setContentsMargins(12, 8, 12, 8)
         lay.setSpacing(8)
 
-        self._prev_month_btn = QPushButton("◀")
+        self._prev_month_btn = QPushButton()
+        self._prev_month_btn.setIcon(_svg_icon("arrow_left", "#C8CAD8", 16))
         self._prev_month_btn.setFixedSize(32, 32)
         self._prev_month_btn.setToolTip("Mês anterior")
         self._prev_month_btn.clicked.connect(self._on_prev_month)
@@ -1663,7 +1674,8 @@ class TransactionsPage(QWidget):
             "color: #E8EAED; font-weight: 700; font-size: 15px; background: transparent;"
         )
 
-        self._next_month_btn = QPushButton("▶")
+        self._next_month_btn = QPushButton()
+        self._next_month_btn.setIcon(_svg_icon("arrow_right", "#C8CAD8", 16))
         self._next_month_btn.setFixedSize(32, 32)
         self._next_month_btn.setToolTip("Próximo mês")
         self._next_month_btn.clicked.connect(self._on_next_month)
@@ -1723,24 +1735,79 @@ class TransactionsPage(QWidget):
 
     def _build_table(self) -> QTableWidget:
         """
-        Tabela de transações com colunas fixas.
+        Tabela de transações redesenhada com tema claro.
 
-        setEditTriggers(NoEditTriggers) → somente leitura.
-        setAlternatingRowColors → facilita leitura de linhas longas.
+        Colunas: Descrição (ícone+texto) | Conta | Data | Natureza (badge) | Valor | Ações
+        - Tema claro (#F8F9FC) contrastando com a sidebar/header escuros.
+        - Linhas com fundo sutil colorido pelo tipo de transação.
+        - Altura de linha 44 px para melhor legibilidade.
         """
-        headers = ["Data", "Descrição", "Categoria", "Conta", "Tipo", "Valor", "Ações"]
+        headers = ["Descrição", "Conta", "Data", "Natureza", "Valor", ""]
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(False)
         table.verticalHeader().setVisible(False)
+        table.setShowGrid(False)
+
+        # Altura de linha generosa para o conteúdo dos widgets de célula
+        table.verticalHeader().setDefaultSectionSize(44)
+
+        # Tema claro — substitui o QSS global escuro apenas neste widget
+        table.setStyleSheet("""
+            QTableWidget {
+                background-color: #F8F9FC;
+                alternate-background-color: #F0F2F8;
+                color: #1A1D2E;
+                border: none;
+                border-radius: 0px;
+                font-size: 13px;
+                outline: none;
+            }
+            QHeaderView::section {
+                background-color: #ECEEF6;
+                color: #6B7080;
+                font-weight: 600;
+                font-size: 11px;
+                letter-spacing: 0.4px;
+                border: none;
+                border-bottom: 2px solid #D5D9EE;
+                padding: 6px 12px;
+            }
+            QTableWidget::item {
+                padding: 4px 12px;
+                border-bottom: 1px solid #EAECF4;
+                color: #1A1D2E;
+            }
+            QTableWidget::item:selected {
+                background-color: #DDE8FF;
+                color: #1A1D2E;
+            }
+            QTableWidget::item:hover {
+                background-color: #EEF2FF;
+            }
+            QScrollBar:vertical {
+                background: #F0F2F8;
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #C5CAE9;
+                border-radius: 4px;
+                min-height: 30px;
+            }
+        """)
 
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_COL_DESC, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(_COL_NATURE, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(_COL_AMOUNT, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_ACTIONS, 40)
+        table.setColumnWidth(_COL_NATURE, 110)
+        table.setColumnWidth(_COL_AMOUNT, 120)
+        table.setColumnWidth(_COL_ACTIONS, 76)
 
         return table
 
@@ -1859,51 +1926,165 @@ class TransactionsPage(QWidget):
         """Preenche a tabela com as transações filtradas."""
         self._table.setRowCount(len(transactions))
 
+        # Cores do valor por tipo (sobre tema claro)
         _AMOUNT_COLORS = {
-            "income":     "#00C896",
-            "debit":      "#FF6B6B",
-            "credit":     "#FF6B6B",
-            "investment": "#4A9EFF",
-            "invoice":    "#8B90A7",
+            "income":     "#0E8A5F",
+            "debit":      "#C43030",
+            "credit":     "#B35A00",
+            "investment": "#1A6EC4",
+            "invoice":    "#5A5E78",
+        }
+
+        # Fundo sutil por tipo (tema claro — tints pastel)
+        _ROW_BG_LIGHT = {
+            "income":     "#EDF9F4",
+            "debit":      "#FFF0F0",
+            "credit":     "#FFF6EC",
+            "investment": "#EEF4FF",
+            "invoice":    "#F5F5FB",
+        }
+
+        # Cores de ícone de categoria por tipo de transação
+        _CAT_ICON_COLOR = {
+            "income":     "#0E8A5F",
+            "debit":      "#C43030",
+            "credit":     "#B35A00",
+            "investment": "#1A6EC4",
+            "invoice":    "#5A5E78",
+        }
+
+        # Badge de natureza/tipo (bg, fg) — sobre tema claro
+        _NATURE_BADGE_LIGHT: dict[str, tuple[str, str]] = {
+            "essential":     ("#D1F5E9", "#0B6B48"),
+            "discretionary": ("#FFECD6", "#8A4200"),
+            "investment":    ("#D8EAFF", "#0A4CA0"),
+            "transfer":      ("#E8E9F5", "#4A4E6A"),
+        }
+
+        # Badge do tipo quando sem natureza
+        _TYPE_BADGE_LIGHT: dict[str, tuple[str, str]] = {
+            "income":     ("#D1F5E9", "#0B6B48"),
+            "debit":      ("#FFE0E0", "#8A1C1C"),
+            "credit":     ("#FFECD6", "#8A4200"),
+            "investment": ("#D8EAFF", "#0A4CA0"),
+            "invoice":    ("#E8E9F5", "#4A4E6A"),
         }
 
         for row, tx in enumerate(transactions):
             tx_type = tx.get("transaction_type", "")
             amount = float(tx.get("amount", 0))
-            amount_color = _AMOUNT_COLORS.get(tx_type, "#E8EAED")
-            row_bg = _ROW_BG.get(tx_type)
+            amount_color = _AMOUNT_COLORS.get(tx_type, "#1A1D2E")
+            row_bg_color = _ROW_BG_LIGHT.get(tx_type, "#F8F9FC")
 
             expense_nature = tx.get("expense_nature")
-            cat_text = _CAT_DISPLAY.get(tx.get("category", ""), tx.get("category", ""))
+            category = tx.get("category", "outros")
+            cat_icon_color = _CAT_ICON_COLOR.get(tx_type, "#6B7080")
 
-            cells = [
-                (_fmt_date(tx.get("transaction_date", "")), "#E8EAED"),
-                (tx.get("description", ""), "#E8EAED"),
-                (cat_text, "#8B90A7"),
-                (self._account_map.get(tx.get("account_id"), "—"), "#8B90A7"),
-                (_TYPE_DISPLAY.get(tx_type, tx_type), "#8B90A7"),
-                (_fmt_brl(amount if tx_type == "income" else -amount), amount_color),
-            ]
+            # ── Col 0: ícone de categoria + descrição ─────────────────────
+            desc_widget = QWidget()
+            desc_widget.setStyleSheet(f"background-color: {row_bg_color};")
+            desc_lay = QHBoxLayout(desc_widget)
+            desc_lay.setContentsMargins(10, 4, 8, 4)
+            desc_lay.setSpacing(8)
 
-            for col, (text, color) in enumerate(cells):
-                item = QTableWidgetItem(text)
-                item.setForeground(QColor(color))
-                if row_bg:
-                    item.setBackground(QColor(row_bg))
-                if col == _COL_CAT and expense_nature and tx_type in ("debit", "credit"):
-                    # badge de natureza sobrepõe o fundo da linha
-                    bg_dark, fg = _NATURE_BADGE_COLORS.get(expense_nature, ("#2A2D3E", "#8B90A7"))
-                    item.setBackground(QColor(bg_dark))
-                    item.setForeground(QColor(fg))
-                if col == _COL_AMOUNT:
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                    )
-                self._table.setItem(row, col, item)
+            icon_lbl = QLabel()
+            icon_lbl.setPixmap(_cat_icon(category, cat_icon_color, 16).pixmap(16, 16))
+            icon_lbl.setFixedSize(20, 20)
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon_lbl.setStyleSheet("background: transparent;")
 
-            edit_btn, cell = _icon_btn("✏️", "Editar lançamento")
+            desc_lbl = QLabel(tx.get("description", ""))
+            desc_lbl.setStyleSheet(
+                "color: #1A1D2E; font-weight: 500; font-size: 13px; background: transparent;"
+            )
+            desc_lbl.setToolTip(tx.get("description", ""))
+
+            desc_lay.addWidget(icon_lbl)
+            desc_lay.addWidget(desc_lbl, 1)
+            self._table.setCellWidget(row, _COL_DESC, desc_widget)
+
+            # ── Col 1: Conta ──────────────────────────────────────────────
+            acc_text = self._account_map.get(tx.get("account_id"), "—")
+            acc_item = QTableWidgetItem(acc_text)
+            acc_item.setForeground(QColor("#5A5E78"))
+            acc_item.setBackground(QColor(row_bg_color))
+            self._table.setItem(row, _COL_ACCOUNT, acc_item)
+
+            # ── Col 2: Data ───────────────────────────────────────────────
+            date_item = QTableWidgetItem(_fmt_date(tx.get("transaction_date", "")))
+            date_item.setForeground(QColor("#6B7080"))
+            date_item.setBackground(QColor(row_bg_color))
+            self._table.setItem(row, _COL_DATE, date_item)
+
+            # ── Col 3: Badge de natureza (ou tipo quando sem natureza) ────
+            if expense_nature and tx_type in ("debit", "credit", "invoice"):
+                badge_bg, badge_fg = _NATURE_BADGE_LIGHT.get(
+                    expense_nature, ("#E8E9F5", "#4A4E6A")
+                )
+                badge_text = _NATURE_DISPLAY.get(expense_nature, expense_nature)
+            else:
+                badge_bg, badge_fg = _TYPE_BADGE_LIGHT.get(tx_type, ("#E8E9F5", "#4A4E6A"))
+                badge_text = _TYPE_DISPLAY.get(tx_type, tx_type)
+
+            badge_widget = QWidget()
+            badge_widget.setStyleSheet(f"background-color: {row_bg_color};")
+            badge_lay = QHBoxLayout(badge_widget)
+            badge_lay.setContentsMargins(6, 4, 6, 4)
+            badge_lay.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+            badge_lbl = QLabel(badge_text)
+            badge_lbl.setStyleSheet(
+                f"background-color: {badge_bg}; color: {badge_fg};"
+                " border-radius: 8px; padding: 2px 8px;"
+                " font-size: 10px; font-weight: 600; letter-spacing: 0.2px;"
+            )
+            badge_lbl.setFixedHeight(20)
+            badge_lay.addWidget(badge_lbl)
+            self._table.setCellWidget(row, _COL_NATURE, badge_widget)
+
+            # ── Col 4: Valor (alinhado à direita, colorido) ───────────────
+            sign = "" if tx_type == "income" else "−"
+            amount_item = QTableWidgetItem(f"{sign}{_fmt_brl(amount)}")
+            amount_item.setForeground(QColor(amount_color))
+            amount_item.setBackground(QColor(row_bg_color))
+            amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            # Negrito para receitas e despesas maiores
+            font = amount_item.font()
+            font.setWeight(600)
+            amount_item.setFont(font)
+            self._table.setItem(row, _COL_AMOUNT, amount_item)
+
+            # ── Col 5: Ações (editar + excluir) ───────────────────────────
+            actions_w = QWidget()
+            actions_w.setStyleSheet(f"background-color: {row_bg_color};")
+            act_lay = QHBoxLayout(actions_w)
+            act_lay.setContentsMargins(4, 4, 4, 4)
+            act_lay.setSpacing(2)
+            act_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            edit_btn = QPushButton()
+            edit_btn.setIcon(_svg_icon("edit", "#5A5E78", 14))
+            edit_btn.setFixedSize(30, 30)
+            edit_btn.setToolTip("Editar lançamento")
+            edit_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: none; border-radius: 6px; }"
+                "QPushButton:hover { background: #E0E4F5; }"
+            )
             edit_btn.clicked.connect(lambda _, t=tx: self._open_edit_dialog(t))
-            self._table.setCellWidget(row, _COL_ACTIONS, cell)
+
+            del_btn = QPushButton()
+            del_btn.setIcon(_svg_icon("delete", "#C43030", 14))
+            del_btn.setFixedSize(30, 30)
+            del_btn.setToolTip("Excluir lançamento")
+            del_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: none; border-radius: 6px; }"
+                "QPushButton:hover { background: #FFE0E0; }"
+            )
+            del_btn.clicked.connect(lambda _, t=tx: self._delete_transaction(t))
+
+            act_lay.addWidget(edit_btn)
+            act_lay.addWidget(del_btn)
+            self._table.setCellWidget(row, _COL_ACTIONS, actions_w)
 
     def _refresh_totals(self, transactions: list[dict]) -> None:
         """Recalcula e exibe os totais de receitas, despesas e saldo."""
@@ -1924,6 +2105,29 @@ class TransactionsPage(QWidget):
         self._total_balance.setStyleSheet(
             f"color: {balance_color}; font-weight: 600; font-size: 13px;"
         )
+
+    # ------------------------------------------------------------------
+    # Exclusão de lançamento (iniciada pelo botão delete da tabela)
+    # ------------------------------------------------------------------
+
+    def _delete_transaction(self, tx: dict) -> None:
+        """Pede confirmação e exclui o lançamento via API."""
+        desc = tx.get("description", "—")
+        reply = QMessageBox.question(
+            self,
+            "Excluir lançamento",
+            f"Excluir '{desc}'? Esta ação não pode ser desfeita.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._client.delete_transaction(tx["id"])
+            app_signals.data_changed.emit()
+            self.load_data()
+        except ApiError as exc:
+            QMessageBox.warning(self, "Erro", f"Não foi possível excluir: {exc}")
 
     # ------------------------------------------------------------------
     # Diálogo de edição
@@ -1952,12 +2156,34 @@ class TransactionsPage(QWidget):
 
     def _open_new_dialog(self) -> None:
         """Abre o diálogo de novo lançamento. Salva via worker se confirmado."""
+        if not self._accounts:
+            QMessageBox.information(
+                self,
+                "Nenhuma conta cadastrada",
+                "Cadastre ao menos uma conta em Contas antes de registrar lançamentos.",
+            )
+            return
         dialog = NewTransactionDialog(self._accounts, self._cards, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         payload = dialog.get_payload()
         self._start_save(payload)
+
+    def open_new_for_account(self, account_id: int) -> None:
+        """
+        Abre o diálogo de novo lançamento com uma conta pré-selecionada.
+        Chamado pela MainWindow quando o usuário clica em '+ Lançamento' em um card de conta.
+        """
+        dialog = NewTransactionDialog(
+            self._accounts,
+            self._cards,
+            parent=self,
+            preselect_account_id=account_id,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._start_save(dialog.get_payload())
 
     def _start_save(self, payload: dict) -> None:
         """Dispara o worker de salvamento e desabilita interação durante o processo."""
@@ -2027,12 +2253,14 @@ class TransactionsPage(QWidget):
             actions_layout.setSpacing(4)
             actions_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            edit_btn = QPushButton("✏️")
+            edit_btn = QPushButton()
+            edit_btn.setIcon(_svg_icon("edit", "#C8CAD8", 14))
             edit_btn.setFixedSize(32, 32)
             edit_btn.setToolTip("Editar dívida")
             edit_btn.clicked.connect(lambda _, d=debt: self._open_edit_debt_dialog(d))
 
-            del_btn = QPushButton("🗑️")
+            del_btn = QPushButton()
+            del_btn.setIcon(_svg_icon("delete", "#FF6B6B", 14))
             del_btn.setFixedSize(32, 32)
             del_btn.setToolTip("Excluir dívida")
             del_btn.clicked.connect(lambda _, d=debt: self._delete_debt(d))
@@ -2195,8 +2423,8 @@ class TransactionsPage(QWidget):
                 self._rec_table.setItem(row, col, item)
 
             # Botões de ação
-            edit_btn, edit_container = _icon_btn("✏️", "Editar")
-            del_btn,  del_container  = _icon_btn("🗑️", "Excluir")
+            edit_btn, edit_container = _icon_btn("edit", "Editar")
+            del_btn,  del_container  = _icon_btn("delete", "Excluir")
             edit_btn.clicked.connect(lambda _, e=exp: self._open_edit_recurring_dialog(e))
             del_btn.clicked.connect(lambda _, e=exp: self._delete_recurring(e))
 
@@ -2363,13 +2591,16 @@ def _section_lbl(text: str) -> QLabel:
     return lbl
 
 
-def _icon_btn(icon: str, tooltip: str) -> tuple["QPushButton", "QWidget"]:
-    """Retorna (botão, container) com botão de ícone 32×32 centralizado na célula."""
+def _icon_btn(icon_name: str, tooltip: str) -> tuple["QPushButton", "QWidget"]:
+    """Retorna (botão, container) com botão de ícone SVG 32×32 centralizado na célula."""
     container = QWidget()
     lay = QHBoxLayout(container)
     lay.setContentsMargins(4, 2, 4, 2)
     lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    btn = QPushButton(icon)
+    btn = QPushButton()
+    # escolhe cor do ícone conforme a ação
+    _color_map = {"edit": "#C8CAD8", "delete": "#FF6B6B", "view": "#4A9EFF", "pay": "#00C896"}
+    btn.setIcon(_svg_icon(icon_name, _color_map.get(icon_name, "#C8CAD8"), 14))
     btn.setFixedSize(32, 32)
     btn.setToolTip(tooltip)
     lay.addWidget(btn)

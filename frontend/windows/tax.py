@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.icons import icon as _svg_icon
 
 
 # ======================================================================
@@ -147,7 +148,8 @@ class TaxPage(QWidget):
         self._year_combo.currentIndexChanged.connect(self.load_data)
         hdr.addWidget(self._year_combo)
 
-        refresh_btn = QPushButton("↻ Atualizar")
+        refresh_btn = QPushButton(" Atualizar")
+        refresh_btn.setIcon(_svg_icon("refresh", "#FFFFFF", 14))
         refresh_btn.setProperty("class", "primary")
         refresh_btn.clicked.connect(self.load_data)
         hdr.addWidget(refresh_btn)

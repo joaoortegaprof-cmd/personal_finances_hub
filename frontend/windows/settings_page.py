@@ -25,6 +25,7 @@ import json
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
+from frontend.components.icons import icon as _svg_icon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -209,11 +210,12 @@ class SettingsPage(QWidget):
 
         # --- Botão salvar ---
         btn_row = QHBoxLayout()
-        save_btn = QPushButton("Salvar Configurações")
+        save_btn = QPushButton(" Salvar Configurações")
+        save_btn.setIcon(_svg_icon("save", "#FFFFFF", 14))
         save_btn.setProperty("class", "primary")
         save_btn.style().unpolish(save_btn)
         save_btn.style().polish(save_btn)
-        save_btn.setFixedWidth(200)
+        save_btn.setFixedWidth(220)
         save_btn.clicked.connect(self._save)
         btn_row.addWidget(save_btn)
 
