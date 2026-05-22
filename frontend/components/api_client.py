@@ -476,6 +476,26 @@ class ApiClient:
         return self._get(f"/tax/darf/{year}/{month}")
 
     # ------------------------------------------------------------------
+    # Simulação financeira
+    # ------------------------------------------------------------------
+
+    def simulate_retirement(self, payload: dict[str, Any]) -> dict:
+        """Projeta crescimento patrimonial rumo à aposentadoria."""
+        return self._post("/simulation/retirement", payload)
+
+    def simulate_goal(self, payload: dict[str, Any]) -> dict:
+        """Projeta evolução de poupança para um objetivo financeiro."""
+        return self._post("/simulation/goal", payload)
+
+    def simulate_debt_payoff(self, payload: dict[str, Any]) -> dict:
+        """Compara quitação normal vs acelerada de uma dívida."""
+        return self._post("/simulation/debt-payoff", payload)
+
+    def get_fire_number(self, withdrawal_rate: float = 0.04) -> dict:
+        """Calcula o número FIRE com dados reais do banco."""
+        return self._get("/simulation/fire", params={"withdrawal_rate": withdrawal_rate})
+
+    # ------------------------------------------------------------------
     # Sistema
     # ------------------------------------------------------------------
 

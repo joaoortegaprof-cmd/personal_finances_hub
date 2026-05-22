@@ -40,6 +40,7 @@ from frontend.windows.investments import InvestmentsPage
 from frontend.windows.market import MarketPage
 from frontend.windows.reports import ReportsPage
 from frontend.windows.settings_page import SettingsPage
+from frontend.windows.simulation import SimulationPage
 from frontend.windows.tax import TaxPage
 from frontend.windows.transactions import TransactionsPage
 
@@ -57,6 +58,7 @@ _NAV_ITEMS: list[tuple[str, int]] = [
     ("Relatórios",   6),
     ("IR e DARF",    7),
     ("Configurações",8),
+    ("Simulações",   9),
 ]
 
 
@@ -253,6 +255,10 @@ class MainWindow(QMainWindow):
         # 8 — Configurações e Metas
         self._settings_page = SettingsPage()
         stack.addWidget(self._settings_page)
+
+        # 9 — Simulações financeiras
+        self._simulation_page = SimulationPage()
+        stack.addWidget(self._simulation_page)
 
         return stack
 
