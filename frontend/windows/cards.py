@@ -27,6 +27,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QColorDialog,
     QComboBox,
     QDateEdit,
     QDialog,
@@ -34,11 +35,13 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -50,6 +53,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.signals import app_signals
 
 
 # ======================================================================
@@ -235,11 +239,14 @@ _INV_ACTIONS = 4
 class CardDialog(QDialog):
     """Formulário modal para criar um novo cartão de crédito."""
 
+    _DEFAULT_COLOR = "#7B61FF"
+
     def __init__(self, accounts: list[dict], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Novo Cartão de Crédito")
         self.setMinimumWidth(440)
         self._accounts = accounts
+        self._card_color = self._DEFAULT_COLOR
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -292,6 +299,22 @@ class CardDialog(QDialog):
             self._account_combo.addItem(f"{acc['name']} ({acc['bank_name']})", userData=acc["id"])
         form.addRow("Conta de pagamento", self._account_combo)
 
+        # Seletor de cor
+        color_row = QHBoxLayout()
+        color_row.setSpacing(10)
+        self._color_btn = QPushButton()
+        self._color_btn.setFixedSize(40, 28)
+        self._color_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._color_btn.setToolTip("Clique para escolher a cor do cartão")
+        self._color_btn.clicked.connect(self._pick_color)
+        self._color_preview = QLabel(self._card_color)
+        self._color_preview.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        color_row.addWidget(self._color_btn)
+        color_row.addWidget(self._color_preview)
+        color_row.addStretch()
+        self._update_color_btn()
+        form.addRow("Cor do cartão", color_row)
+
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -307,6 +330,22 @@ class CardDialog(QDialog):
             save_btn.style().polish(save_btn)
 
         layout.addWidget(buttons)
+
+    def _pick_color(self) -> None:
+        """Abre QColorDialog e atualiza a cor selecionada."""
+        initial = QColor(self._card_color)
+        color = QColorDialog.getColor(initial, self, "Escolher cor do cartão")
+        if color.isValid():
+            self._card_color = color.name().upper()
+            self._update_color_btn()
+
+    def _update_color_btn(self) -> None:
+        """Atualiza o botão de cor com a cor atual."""
+        self._color_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {self._card_color}; "
+            f"border: 2px solid #4A4D6A; border-radius: 4px; }}"
+        )
+        self._color_preview.setText(self._card_color)
 
     def _on_accept(self) -> None:
         if not self._name.text().strip():
@@ -328,6 +367,7 @@ class CardDialog(QDialog):
             "credit_limit": f"{self._limit.value():.2f}",
             "closing_day": self._closing_day.value(),
             "due_day": self._due_day.value(),
+            "card_color": self._card_color,
         }
         account_id = self._account_combo.currentData()
         if account_id is not None:
@@ -367,6 +407,156 @@ class EditCardDialog(CardDialog):
                     self._account_combo.setCurrentIndex(i)
                     break
 
+        color = card.get("card_color", self._DEFAULT_COLOR)
+        self._card_color = color if color else self._DEFAULT_COLOR
+        self._update_color_btn()
+
+
+# ======================================================================
+# Widget visual de cartão de crédito
+# ======================================================================
+
+
+class CreditCardWidget(QFrame):
+    """
+    Card visual 320×180 px com gradiente, número mascarado, limites e barra de uso.
+    Emite card_clicked(dict) ao ser clicado. Destaca borda quando selecionado.
+    """
+
+    card_clicked = pyqtSignal(dict)
+
+    def __init__(self, card: dict, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._card = card
+        self._selected = False
+        self.setFixedSize(320, 180)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._build_ui()
+        self._apply_style()
+
+    # ------------------------------------------------------------------
+    # UI interna
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 12)
+        layout.setSpacing(4)
+
+        # Linha 1: banco (esq) + "CRÉDITO" (dir)
+        row1 = QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        bank_lbl = QLabel(self._card.get("bank_name", ""))
+        bank_lbl.setStyleSheet(
+            "color: rgba(255,255,255,220); font-size: 12px; font-weight: 700;"
+            " background: transparent; letter-spacing: 1px;"
+        )
+        type_lbl = QLabel("CRÉDITO")
+        type_lbl.setStyleSheet(
+            "color: rgba(255,255,255,150); font-size: 10px; background: transparent;"
+        )
+        row1.addWidget(bank_lbl)
+        row1.addStretch()
+        row1.addWidget(type_lbl)
+        layout.addLayout(row1)
+
+        layout.addStretch()
+
+        # Linha 2: número mascarado
+        last4 = self._card.get("last_four_digits", "????")
+        num_lbl = QLabel(f"•••• •••• •••• {last4}")
+        num_lbl.setStyleSheet(
+            "color: white; font-size: 17px; font-weight: 700;"
+            " letter-spacing: 3px; background: transparent;"
+        )
+        num_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(num_lbl)
+
+        layout.addStretch()
+
+        # Linha 3: nome do cartão
+        name_lbl = QLabel(self._card.get("name", "").upper())
+        name_lbl.setStyleSheet(
+            "color: rgba(255,255,255,190); font-size: 10px; font-weight: 600;"
+            " letter-spacing: 1px; background: transparent;"
+        )
+        layout.addWidget(name_lbl)
+
+        # Linha 4: limites
+        limit     = float(self._card.get("credit_limit", 0))
+        available = float(self._card.get("_available", limit))
+        used_pct  = int((limit - available) / max(limit, 1) * 100)
+        avail_color = (
+            "#6EFFCE" if available >= limit * 0.3
+            else "#FFD06B" if available > 0
+            else "#FF8080"
+        )
+
+        limits_row = QHBoxLayout()
+        limits_row.setContentsMargins(0, 2, 0, 2)
+        total_lbl = QLabel(f"Total {_fmt_brl(limit)}")
+        total_lbl.setStyleSheet(
+            "color: rgba(255,255,255,160); font-size: 9px; background: transparent;"
+        )
+        avail_lbl = QLabel(f"Disp. {_fmt_brl(available)}")
+        avail_lbl.setStyleSheet(
+            f"color: {avail_color}; font-size: 9px; font-weight: 600;"
+            " background: transparent;"
+        )
+        avail_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        limits_row.addWidget(total_lbl)
+        limits_row.addStretch()
+        limits_row.addWidget(avail_lbl)
+        layout.addLayout(limits_row)
+
+        # Barra de uso do limite
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(used_pct)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(4)
+        bar.setStyleSheet("""
+            QProgressBar {
+                background: rgba(255,255,255,50);
+                border: none;
+                border-radius: 2px;
+            }
+            QProgressBar::chunk {
+                background: rgba(255,255,255,200);
+                border-radius: 2px;
+            }
+        """)
+        layout.addWidget(bar)
+
+    def _apply_style(self) -> None:
+        color = self._card.get("card_color", "#7B61FF")
+        try:
+            r = int(color[1:3], 16)
+            g = int(color[3:5], 16)
+            b = int(color[5:7], 16)
+            darker = f"#{max(0,r-50):02X}{max(0,g-50):02X}{max(0,b-50):02X}"
+        except (ValueError, IndexError):
+            color, darker = "#7B61FF", "#5A44CC"
+
+        border = "3px solid white" if self._selected else "2px solid rgba(255,255,255,30)"
+        self.setStyleSheet(f"""
+            CreditCardWidget {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {color}, stop:1 {darker});
+                border-radius: 12px;
+                border: {border};
+            }}
+        """)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self._apply_style()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.card_clicked.emit(self._card)
+        super().mousePressEvent(event)
+
 
 # ======================================================================
 # Página principal de Cartões
@@ -394,7 +584,9 @@ class CardsPage(QWidget):
         self._pay_worker: PayInvoiceWorker | None = None
         self._cards: list[dict] = []
         self._accounts: list[dict] = []
+        self._card_widgets: list[CreditCardWidget] = []
         self._selected_card_id: int | None = None
+        self._selected_card: dict | None = None
         self._build_ui()
         self.load_data()
 
@@ -418,13 +610,12 @@ class CardsPage(QWidget):
         main.setContentsMargins(32, 24, 32, 24)
         main.setSpacing(20)
 
-        # --- Cartões ---
+        # --- Header ---
         cards_header = QHBoxLayout()
         cards_label = QLabel("Cartões de crédito")
         cards_label.setObjectName("sectionTitle")
         cards_header.addWidget(cards_label)
         cards_header.addStretch()
-
         new_btn = QPushButton("+ Novo Cartão")
         new_btn.setProperty("class", "primary")
         new_btn.style().unpolish(new_btn)
@@ -433,22 +624,55 @@ class CardsPage(QWidget):
         cards_header.addWidget(new_btn)
         main.addLayout(cards_header)
 
+        # --- Loading ---
         self._loading_label = QLabel("Carregando cartões…")
         self._loading_label.setObjectName("loadingLabel")
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main.addWidget(self._loading_label)
 
-        self._cards_table = self._build_cards_table()
-        self._cards_table.setVisible(False)
-        self._cards_table.itemSelectionChanged.connect(self._on_card_selected)
-        main.addWidget(self._cards_table)
+        # --- Grade de cards visuais (2 por linha) ---
+        self._cards_grid_container = QWidget()
+        self._cards_grid_container.setVisible(False)
+        self._cards_grid = QGridLayout(self._cards_grid_container)
+        self._cards_grid.setSpacing(20)
+        self._cards_grid.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        main.addWidget(self._cards_grid_container)
 
-        # --- Faturas ---
+        # --- Painel de ações do cartão selecionado ---
+        self._action_panel = QFrame()
+        self._action_panel.setObjectName("summaryCard")
+        self._action_panel.setVisible(False)
+        ap_layout = QHBoxLayout(self._action_panel)
+        ap_layout.setContentsMargins(16, 10, 16, 10)
+        ap_layout.setSpacing(12)
+
+        self._selected_card_label = QLabel("")
+        self._selected_card_label.setStyleSheet(
+            "color: #E8EAED; font-weight: 600; font-size: 13px;"
+        )
+        ap_layout.addWidget(self._selected_card_label)
+        ap_layout.addStretch()
+
+        edit_btn = QPushButton("✏️  Editar")
+        edit_btn.setToolTip("Editar cartão selecionado")
+        edit_btn.clicked.connect(self._edit_selected_card)
+        ap_layout.addWidget(edit_btn)
+
+        del_btn = QPushButton("🗑️  Excluir")
+        del_btn.setToolTip("Excluir cartão selecionado")
+        del_btn.setStyleSheet("QPushButton { color: #FF6B6B; }")
+        del_btn.clicked.connect(self._delete_selected_card)
+        ap_layout.addWidget(del_btn)
+        main.addWidget(self._action_panel)
+
+        # --- Seção de faturas ---
         inv_label = QLabel("Faturas")
         inv_label.setObjectName("sectionTitle")
         main.addWidget(inv_label)
 
-        self._inv_loading = QLabel("Selecione um cartão para ver as faturas.")
+        self._inv_loading = QLabel("Clique em um cartão para ver as faturas.")
         self._inv_loading.setObjectName("loadingLabel")
         self._inv_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main.addWidget(self._inv_loading)
@@ -460,22 +684,6 @@ class CardsPage(QWidget):
         main.addStretch()
         scroll.setWidget(content)
         outer.addWidget(scroll)
-
-    def _build_cards_table(self) -> QTableWidget:
-        headers = ["Nome", "Banco", "Final", "Limite Total", "Lim. Disponível", "Fechamento", "Vencimento", "Ações"]
-        table = QTableWidget(0, len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setAlternatingRowColors(True)
-        table.verticalHeader().setVisible(False)
-
-        hdr = table.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(_CC_NAME, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(_CC_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_CC_ACTIONS, 220)
-        return table
 
     def _build_invoices_table(self) -> QTableWidget:
         headers = ["Período", "Vencimento", "Total", "Status", "Ações"]
@@ -500,7 +708,8 @@ class CardsPage(QWidget):
     def load_data(self) -> None:
         if self._worker and self._worker.isRunning():
             return
-        self._cards_table.setVisible(False)
+        self._cards_grid_container.setVisible(False)
+        self._action_panel.setVisible(False)
         self._loading_label.setText("Carregando cartões…")
         self._loading_label.setVisible(True)
 
@@ -513,84 +722,66 @@ class CardsPage(QWidget):
         self._cards = cards
         self._accounts = accounts
         self._loading_label.setVisible(False)
-        self._cards_table.setVisible(True)
-        self._populate_cards_table(cards)
+        self._populate_cards_grid(cards)
 
     def _on_error(self, message: str) -> None:
         self._loading_label.setText(f"Erro ao carregar: {message}")
-        self._cards_table.setVisible(False)
+        self._cards_grid_container.setVisible(False)
 
-    def _populate_cards_table(self, cards: list[dict]) -> None:
-        self._cards_table.setRowCount(len(cards))
-        for row, card in enumerate(cards):
-            limit     = float(card.get("credit_limit", 0))
-            available = float(card.get("_available", limit))
-            avail_color = "#00C896" if available >= limit * 0.3 else "#FFB347" if available > 0 else "#FF6B6B"
-            data = [
-                (card.get("name", ""), "#E8EAED"),
-                (card.get("bank_name", ""), "#E8EAED"),
-                (f"••••{card.get('last_four_digits', '')}", "#8B90A7"),
-                (_fmt_brl(limit), "#4A9EFF"),
-                (_fmt_brl(available), avail_color),
-                (f"Dia {card.get('closing_day', '—')}", "#8B90A7"),
-                (f"Dia {card.get('due_day', '—')}", "#8B90A7"),
-            ]
-            for col, (text, color) in enumerate(data):
-                item = QTableWidgetItem(text)
-                item.setForeground(QColor(color))
-                if col in (_CC_LIMIT, _CC_AVAIL):
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self._cards_table.setItem(row, col, item)
+    def _populate_cards_grid(self, cards: list[dict]) -> None:
+        """Preenche a grade 2-por-linha com CreditCardWidget."""
+        # Limpa widgets anteriores
+        while self._cards_grid.count():
+            item = self._cards_grid.takeAt(0)
+            if w := item.widget():
+                w.deleteLater()
+        self._card_widgets = []
 
-            actions = QWidget()
-            actions_layout = QHBoxLayout(actions)
-            actions_layout.setContentsMargins(4, 2, 4, 2)
-            actions_layout.setSpacing(4)
+        if not cards:
+            self._cards_grid_container.setVisible(False)
+            self._loading_label.setText("Nenhum cartão cadastrado.")
+            self._loading_label.setVisible(True)
+            return
 
-            fatura_btn = QPushButton("Ver fatura")
-            fatura_btn.setToolTip("Ver fatura atual do cartão")
-            fatura_btn.clicked.connect(lambda _, c=card: self._view_current_invoice(c))
+        for idx, card in enumerate(cards):
+            widget = CreditCardWidget(card)
+            widget.card_clicked.connect(self._on_card_widget_clicked)
+            row_idx, col_idx = divmod(idx, 2)
+            self._cards_grid.addWidget(widget, row_idx, col_idx)
+            self._card_widgets.append(widget)
 
-            edit_btn = QPushButton("✏️")
-            edit_btn.setToolTip("Editar cartão")
-            edit_btn.setFixedWidth(36)
-            edit_btn.clicked.connect(lambda _, c=card: self._open_edit_card_dialog(c))
+        self._cards_grid_container.setVisible(True)
 
-            del_btn = QPushButton("✕")
-            del_btn.setToolTip("Excluir cartão")
-            del_btn.setFixedWidth(28)
-            del_btn.setStyleSheet("QPushButton { color: #FF6B6B; }")
-            del_btn.clicked.connect(lambda _, c=card: self._confirm_delete_card(c))
+    # ------------------------------------------------------------------
+    # Seleção de cartão
+    # ------------------------------------------------------------------
 
-            actions_layout.addWidget(fatura_btn)
-            actions_layout.addWidget(edit_btn)
-            actions_layout.addWidget(del_btn)
-            self._cards_table.setCellWidget(row, _CC_ACTIONS, actions)
+    def _on_card_widget_clicked(self, card: dict) -> None:
+        """Seleciona o cartão clicado, destaca widget, atualiza painel de ações e carrega faturas."""
+        card_id = card["id"]
+        for widget in self._card_widgets:
+            widget.set_selected(widget._card["id"] == card_id)
+        self._selected_card = card
+        self._selected_card_id = card_id
+        name = card.get("name", "")
+        last4 = card.get("last_four_digits", "")
+        self._selected_card_label.setText(f"{name}  ••••  {last4}")
+        self._action_panel.setVisible(True)
+        self._load_invoices(card_id)
+
+    def _edit_selected_card(self) -> None:
+        if self._selected_card is None:
+            return
+        self._open_edit_card_dialog(self._selected_card)
+
+    def _delete_selected_card(self) -> None:
+        if self._selected_card is None:
+            return
+        self._confirm_delete_card(self._selected_card)
 
     # ------------------------------------------------------------------
     # Dados — Faturas
     # ------------------------------------------------------------------
-
-    def _view_current_invoice(self, card: dict) -> None:
-        """Seleciona o cartão na tabela e carrega as faturas diretamente."""
-        card_id = card["id"]
-        for r in range(self._cards_table.rowCount()):
-            if r < len(self._cards) and self._cards[r]["id"] == card_id:
-                self._cards_table.selectRow(r)
-                break
-        self._selected_card_id = card_id
-        self._load_invoices(card_id)
-
-    def _on_card_selected(self) -> None:
-        rows = self._cards_table.selectedItems()
-        if not rows:
-            return
-        row = self._cards_table.currentRow()
-        if row < 0 or row >= len(self._cards):
-            return
-        card = self._cards[row]
-        self._selected_card_id = card["id"]
-        self._load_invoices(card["id"])
 
     def _load_invoices(self, card_id: int) -> None:
         if self._inv_worker and self._inv_worker.isRunning():
@@ -682,7 +873,7 @@ class CardsPage(QWidget):
         if self._save_worker and self._save_worker.isRunning():
             return
         self._save_worker = SaveCardWorker(self._client, payload)
-        self._save_worker.saved.connect(lambda _: self.load_data())
+        self._save_worker.saved.connect(lambda _: (app_signals.data_changed.emit(), self.load_data()))
         self._save_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao salvar", msg)
         )
@@ -696,7 +887,7 @@ class CardsPage(QWidget):
         if self._update_worker and self._update_worker.isRunning():
             return
         self._update_worker = UpdateCardWorker(self._client, card["id"], payload)
-        self._update_worker.updated.connect(lambda _: self.load_data())
+        self._update_worker.updated.connect(lambda _: (app_signals.data_changed.emit(), self.load_data()))
         self._update_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
         )
@@ -716,7 +907,7 @@ class CardsPage(QWidget):
         if self._delete_worker and self._delete_worker.isRunning():
             return
         self._delete_worker = DeleteCardWorker(self._client, card["id"])
-        self._delete_worker.deleted.connect(self.load_data)
+        self._delete_worker.deleted.connect(lambda: (app_signals.data_changed.emit(), self.load_data()))
         self._delete_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao excluir", msg)
         )

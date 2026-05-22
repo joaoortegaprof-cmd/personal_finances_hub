@@ -43,9 +43,11 @@ from backend.core.database import Base
 
 class TransactionType(str, enum.Enum):
     """Natureza do fluxo financeiro da transação."""
-    INCOME   = "receita"      # Entrada de dinheiro (salário, dividendo, venda…)
-    EXPENSE  = "despesa"      # Saída de dinheiro (compra, conta, serviço…)
-    TRANSFER = "transferencia"# Movimentação interna entre contas próprias
+    INCOME          = "income"      # Entrada de dinheiro — aumenta saldo da conta
+    DEBIT_EXPENSE   = "debit"       # Débito em conta — diminui saldo da conta
+    CREDIT_EXPENSE  = "credit"      # Compra no cartão — consome limite, não debita conta
+    INVOICE_PAYMENT = "invoice"     # Pagamento de fatura — debita conta e restaura limite
+    INVESTMENT      = "investment"  # Aporte — diminui saldo da conta
 
 
 class TransactionCategory(str, enum.Enum):
@@ -83,15 +85,15 @@ class TransactionCategory(str, enum.Enum):
 
 class ExpenseNature(str, enum.Enum):
     """
-    Classifica a natureza de uma despesa para análise de saúde financeira.
+    Classifica a natureza de uma saída para análise de saúde financeira.
 
-    Só é relevante para transaction_type == EXPENSE (ou TRANSFER).
-    Receitas devem ter este campo como None.
+    Relevante para DEBIT_EXPENSE, CREDIT_EXPENSE e INVESTMENT.
+    INCOME e INVOICE_PAYMENT devem ter este campo como None.
     """
     ESSENTIAL      = "essential"       # Gasto essencial (moradia, saúde, transporte…)
     DISCRETIONARY  = "discretionary"   # Gasto supérfluo (lazer, restaurante, compras…)
     INVESTMENT     = "investment"      # Aporte / investimento
-    TRANSFER       = "transfer"        # Transferência interna entre contas
+    TRANSFER       = "transfer"        # Usado internamente para pagamentos de fatura
 
 
 # Mapeamento automático: categoria → natureza da despesa (populado abaixo)

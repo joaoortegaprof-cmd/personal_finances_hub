@@ -143,6 +143,13 @@ class TransactionRepository(BaseRepository[Transaction]):
         #   SELECT SUM(amount) FILTER (WHERE type = 'receita') AS income,
         #          SUM(amount) FILTER (WHERE type = 'despesa') AS expense
         # func.coalesce garante 0 quando não há registros.
+        # Despesa = DEBIT + CREDIT + INVESTMENT (excluindo INVOICE_PAYMENT
+        # para não duplicar com CREDIT_EXPENSE já contabilizado)
+        expense_types = [
+            TransactionType.DEBIT_EXPENSE,
+            TransactionType.CREDIT_EXPENSE,
+            TransactionType.INVESTMENT,
+        ]
         stmt = select(
             func.coalesce(
                 func.sum(Transaction.amount).filter(
@@ -152,7 +159,7 @@ class TransactionRepository(BaseRepository[Transaction]):
             ).label("income"),
             func.coalesce(
                 func.sum(Transaction.amount).filter(
-                    Transaction.transaction_type == TransactionType.EXPENSE
+                    Transaction.transaction_type.in_(expense_types)
                 ),
                 Decimal("0.00"),
             ).label("expense"),

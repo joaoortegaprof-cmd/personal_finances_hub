@@ -67,9 +67,8 @@ async def get_emergency_fund(db: AsyncSession = Depends(get_db)):
     )
     saldo_total: Decimal = ef_result.scalar() or Decimal("0.00")
 
-    # Despesas dos últimos 6 meses
+    # Despesas dos últimos 6 meses (débito + crédito, excluindo pagamento de fatura)
     today = date.today()
-    # Primeiro dia do mês 6 meses atrás
     six_months_ago_month = today.month - 6
     six_months_ago_year  = today.year
     if six_months_ago_month <= 0:
@@ -81,7 +80,10 @@ async def get_emergency_fund(db: AsyncSession = Depends(get_db)):
 
     expense_result = await db.execute(
         select(func.coalesce(func.sum(Transaction.amount), Decimal("0.00"))).where(
-            Transaction.transaction_type == TransactionType.EXPENSE,
+            Transaction.transaction_type.in_([
+                TransactionType.DEBIT_EXPENSE,
+                TransactionType.CREDIT_EXPENSE,
+            ]),
             Transaction.transaction_date >= start_6m,
             Transaction.transaction_date <= end_today,
         )
@@ -127,7 +129,10 @@ async def get_essential_cost(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Transaction.category, func.coalesce(func.sum(Transaction.amount), 0))
         .where(
-            Transaction.transaction_type == TransactionType.EXPENSE,
+            Transaction.transaction_type.in_([
+                TransactionType.DEBIT_EXPENSE,
+                TransactionType.CREDIT_EXPENSE,
+            ]),
             Transaction.category.in_(essential_cats),
             Transaction.transaction_date >= start_3m,
             Transaction.transaction_date <= today,

@@ -59,6 +59,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.signals import app_signals
 
 
 # ======================================================================
@@ -226,9 +227,10 @@ def _build_monthly_series(
         except (KeyError, ValueError):
             continue
         amount = float(tx.get("amount", 0))
-        if tx.get("transaction_type") == "receita":
+        tx_type = tx.get("transaction_type")
+        if tx_type == "income":
             flows[(d.year, d.month)] += amount
-        else:
+        elif tx_type != "invoice":  # invoice payment não afeta patrimônio (já contado como crédito)
             flows[(d.year, d.month)] -= amount
 
     today  = date.today()
@@ -261,9 +263,10 @@ def _build_yearly_series(
         except (KeyError, ValueError):
             continue
         amount = float(tx.get("amount", 0))
-        if tx.get("transaction_type") == "receita":
+        tx_type = tx.get("transaction_type")
+        if tx_type == "income":
             flows[d.year] += amount
-        else:
+        elif tx_type != "invoice":
             flows[d.year] -= amount
 
     today = date.today()
@@ -890,6 +893,7 @@ class DashboardPage(QWidget):
         self._pat_worker: PatrimonyHistoryWorker | None = None
 
         self._build_ui()
+        app_signals.data_changed.connect(self.load_data)
         self.load_data()
 
     # ------------------------------------------------------------------
@@ -982,15 +986,6 @@ class DashboardPage(QWidget):
         self._alerts_area.setSpacing(8)
         self._content_layout.addLayout(self._alerts_area)
 
-        # ── Botão atualizar ────────────────────────────────────────────
-        self._reload_btn = QPushButton("Atualizar")
-        self._reload_btn.setFixedWidth(120)
-        self._reload_btn.setVisible(False)
-        self._reload_btn.clicked.connect(self.load_data)
-        self._content_layout.addWidget(
-            self._reload_btn, alignment=Qt.AlignmentFlag.AlignRight
-        )
-
         self._content_layout.addStretch()
         scroll.setWidget(content)
         outer.addWidget(scroll)
@@ -1059,7 +1054,6 @@ class DashboardPage(QWidget):
         self._set_content_visible(False)
         self._loading_label.setText("Carregando dados do dashboard…")
         self._loading_label.setVisible(True)
-        self._reload_btn.setVisible(False)
 
         self._worker = DashboardWorker(self._client)
         self._worker.data_ready.connect(self._on_data_ready)
@@ -1152,7 +1146,6 @@ class DashboardPage(QWidget):
 
         # ── Alertas ────────────────────────────────────────────────────
         self._populate_alerts(alerts.get("alerts", []))
-        self._reload_btn.setVisible(True)
 
         # Garante que o scroll retorne ao topo após todos os widgets aparecerem
         QTimer.singleShot(50, lambda: self._scroll.verticalScrollBar().setValue(0))
@@ -1161,7 +1154,6 @@ class DashboardPage(QWidget):
         self._loading_label.setText(f"Erro ao carregar: {message}")
         self._loading_label.setVisible(True)
         self._set_content_visible(False)
-        self._reload_btn.setVisible(True)
 
     # ------------------------------------------------------------------
     # Slots — PatrimonyHistoryWorker

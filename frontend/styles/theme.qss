@@ -78,6 +78,28 @@ QPushButton#navButton:pressed {
     background-color: #2E3250;
 }
 
+QPushButton#navRefreshButton {
+    background-color: transparent;
+    color: #8B90A7;
+    text-align: center;
+    padding: 10px 20px;
+    margin: 8px 8px 12px 8px;
+    border-radius: 8px;
+    border: 1px solid #2E3250;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+QPushButton#navRefreshButton:hover {
+    background-color: #262944;
+    color: #FFFFFF;
+    border-color: #4A4E70;
+}
+
+QPushButton#navRefreshButton:pressed {
+    background-color: #2E3250;
+}
+
 /* ---- Header ----------------------------------------------- */
 QFrame#header {
     background-color: #222640;

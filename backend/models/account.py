@@ -220,6 +220,17 @@ class CreditCard(Base):
     # Dia do mês em que a fatura vence (1–28)
     due_day: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # --- Visual ---
+
+    # Cor do cartão escolhida pelo usuário em hex (#RRGGBB).
+    # Usada para renderizar o card visual na tela de Cartões.
+    card_color: Mapped[str] = mapped_column(
+        String(7),
+        nullable=False,
+        default="#7B61FF",
+        server_default="#7B61FF",
+    )
+
     # --- Conta de pagamento ---
 
     # FK para a Account de onde sai o dinheiro ao pagar a fatura.

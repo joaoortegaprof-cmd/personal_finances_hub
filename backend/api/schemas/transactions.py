@@ -33,9 +33,14 @@ class TransactionCreate(BaseModel):
     def model_post_init(self, __context) -> None:
         # Auto-classifica a natureza se não informada
         if self.expense_nature is None:
-            if self.transaction_type == TransactionType.TRANSFER:
+            if self.transaction_type == TransactionType.INVESTMENT:
+                object.__setattr__(self, "expense_nature", ExpenseNature.INVESTMENT)
+            elif self.transaction_type == TransactionType.INVOICE_PAYMENT:
                 object.__setattr__(self, "expense_nature", ExpenseNature.TRANSFER)
-            elif self.transaction_type == TransactionType.EXPENSE:
+            elif self.transaction_type in (
+                TransactionType.DEBIT_EXPENSE,
+                TransactionType.CREDIT_EXPENSE,
+            ):
                 nature = CATEGORY_TO_NATURE.get(self.category)
                 if nature is not None:
                     object.__setattr__(self, "expense_nature", nature)

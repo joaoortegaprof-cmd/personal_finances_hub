@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -57,6 +58,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.signals import app_signals
 
 
 # ======================================================================
@@ -158,9 +160,11 @@ class SaveTransactionWorker(QThread):
 
 # Mapeamento exibição → valor da API para tipos de transação
 _TYPE_LABELS = {
-    "Receita": "receita",
-    "Despesa": "despesa",
-    "Transferência": "transferencia",
+    "Receita":      "income",
+    "Débito":       "debit",
+    "Crédito":      "credit",
+    "Investimento": "investment",
+    "Pag. Fatura":  "invoice",
 }
 
 # Mapeamento exibição → valor da API para natureza de despesa
@@ -213,42 +217,203 @@ _CATEGORY_LABELS = {
     "Outros": "outros",
 }
 
+# Fundo sutil por tipo de transação para facilitar leitura da tabela
+_ROW_BG = {
+    "income":     "#0A2319",
+    "debit":      "#291111",
+    "credit":     "#261A0A",
+    "investment": "#0A1A29",
+    "invoice":    "#17181E",
+}
+
+_MONTHS_FULL = [
+    "", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+]
+
+
+# Configuração visual dos 5 tipos de lançamento
+_TYPE_CONFIG = {
+    "income":     {"icon": "💰", "label": "Receita",      "color": "#00C896",
+                   "desc": "Salários, rendimentos e outras entradas"},
+    "debit":      {"icon": "💸", "label": "Débito",       "color": "#FF6B6B",
+                   "desc": "Despesas pagas com conta ou dinheiro"},
+    "credit":     {"icon": "💳", "label": "Crédito",      "color": "#FFB347",
+                   "desc": "Compras realizadas no cartão de crédito"},
+    "investment": {"icon": "📈", "label": "Investimento", "color": "#4A9EFF",
+                   "desc": "Aportes em ativos e aplicações financeiras"},
+    "invoice":    {"icon": "🧾", "label": "Pag. Fatura",  "color": "#8B90A7",
+                   "desc": "Pagamento de fatura do cartão de crédito"},
+}
+
+
+class _TypeCard(QFrame):
+    """Frame clicável usado na tela de seleção de tipo do wizard."""
+
+    clicked = pyqtSignal(str)
+
+    def __init__(self, tx_type: str, cfg: dict, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._tx_type = tx_type
+        self.setObjectName("typeCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(60)
+        color = cfg["color"]
+        self.setStyleSheet(f"""
+            QFrame#typeCard {{
+                background: #1A1D2E;
+                border: 1px solid #2A2D3E;
+                border-left: 4px solid {color};
+                border-radius: 8px;
+            }}
+            QFrame#typeCard:hover {{
+                background: #1E2235;
+            }}
+        """)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 8, 14, 8)
+        row.setSpacing(12)
+
+        icon_lbl = QLabel(cfg["icon"])
+        icon_lbl.setStyleSheet("font-size: 20px; background: transparent; border: none;")
+        icon_lbl.setFixedWidth(28)
+        row.addWidget(icon_lbl)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(1)
+        name_lbl = QLabel(cfg["label"])
+        name_lbl.setStyleSheet(
+            f"color: {color}; font-weight: 700; font-size: 13px;"
+            " background: transparent; border: none;"
+        )
+        desc_lbl = QLabel(cfg["desc"])
+        desc_lbl.setStyleSheet(
+            "color: #8B90A7; font-size: 10px; background: transparent; border: none;"
+        )
+        text_col.addWidget(name_lbl)
+        text_col.addWidget(desc_lbl)
+        row.addLayout(text_col)
+        row.addStretch()
+
+        arrow = QLabel("›")
+        arrow.setStyleSheet("color: #4A4D6A; font-size: 18px; background: transparent; border: none;")
+        row.addWidget(arrow)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._tx_type)
+        super().mousePressEvent(event)
+
 
 class NewTransactionDialog(QDialog):
     """
-    Formulário modal para registrar um novo lançamento financeiro.
+    Diálogo em 2 etapas para registrar um novo lançamento financeiro.
 
-    Recebe a lista de contas para popular o combo de conta — assim evitamos
-    uma chamada HTTP adicional dentro do diálogo.
-
-    Retorna os dados coletados via `get_payload()` após exec() == Accepted.
+    Etapa 1: 5 cartões clicáveis para escolher o tipo.
+    Etapa 2: formulário específico para o tipo escolhido.
     """
 
-    def __init__(self, accounts: list[dict], cards: list[dict] | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        accounts: list[dict],
+        cards: list[dict] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Novo Lançamento")
-        self.setMinimumWidth(480)
+        self.setMinimumSize(520, 460)
         self._accounts = accounts
         self._cards    = cards or []
+        self._tx_type: str | None = None
         self._build_ui()
 
+    # ------------------------------------------------------------------
+    # Estrutura principal
+    # ------------------------------------------------------------------
+
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        main = QVBoxLayout(self)
+        main.setContentsMargins(24, 20, 24, 20)
+        main.setSpacing(16)
 
-        title = QLabel("Novo Lançamento")
-        title.setObjectName("sectionTitle")
-        layout.addWidget(title)
+        self._title_lbl = QLabel("Novo Lançamento")
+        self._title_lbl.setObjectName("sectionTitle")
+        main.addWidget(self._title_lbl)
 
-        form = QFormLayout()
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_type_page())   # índice 0
+        self._stack.addWidget(self._build_form_page())   # índice 1
+        main.addWidget(self._stack)
+
+        # Footer com navegação
+        foot = QHBoxLayout()
+        self._back_btn = QPushButton("← Voltar")
+        self._back_btn.clicked.connect(self._go_to_type_page)
+        self._back_btn.setVisible(False)
+        foot.addWidget(self._back_btn)
+        foot.addStretch()
+
+        cancel_btn = QPushButton("Cancelar")
+        cancel_btn.clicked.connect(self.reject)
+        foot.addWidget(cancel_btn)
+
+        self._save_btn = QPushButton("Salvar")
+        self._save_btn.setProperty("class", "success")
+        self._save_btn.clicked.connect(self._on_accept)
+        self._save_btn.setVisible(False)
+        foot.addWidget(self._save_btn)
+
+        main.addLayout(foot)
+
+    # ------------------------------------------------------------------
+    # Etapa 1: seleção de tipo
+    # ------------------------------------------------------------------
+
+    def _build_type_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(10)
+
+        sub = QLabel("Selecione o tipo de lançamento:")
+        sub.setStyleSheet("color: #8B90A7; font-size: 12px;")
+        layout.addWidget(sub)
+
+        for tx_type, cfg in _TYPE_CONFIG.items():
+            card = _TypeCard(tx_type, cfg)
+            card.clicked.connect(self._select_type)
+            layout.addWidget(card)
+
+        layout.addStretch()
+        return page
+
+    # ------------------------------------------------------------------
+    # Etapa 2: formulário adaptável
+    # ------------------------------------------------------------------
+
+    def _build_form_page(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        form = QFormLayout(inner)
         form.setSpacing(12)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setContentsMargins(0, 4, 4, 4)
 
         # Descrição
         self._desc = QLineEdit()
         self._desc.setPlaceholderText("Ex: Salário, Mercado, Conta de luz…")
-        form.addRow("Descrição *", self._desc)
+        self._desc_lbl = QLabel("Descrição *")
+        form.addRow(self._desc_lbl, self._desc)
 
         # Valor
         self._amount = QDoubleSpinBox()
@@ -261,122 +426,174 @@ class NewTransactionDialog(QDialog):
         # Data
         self._date_edit = QDateEdit()
         self._date_edit.setCalendarPopup(True)
-        self._date_edit.setDate(
-            # QDateEdit usa QDate (year, month, day)
-            __import__("PyQt6.QtCore", fromlist=["QDate"]).QDate.currentDate()
-        )
+        self._date_edit.setDate(QDate.currentDate())
         self._date_edit.setDisplayFormat("dd/MM/yyyy")
         form.addRow("Data *", self._date_edit)
-
-        # Tipo
-        self._type_combo = QComboBox()
-        for label in _TYPE_LABELS:
-            self._type_combo.addItem(label)
-        self._type_combo.currentIndexChanged.connect(self._on_type_changed)
-        form.addRow("Tipo *", self._type_combo)
 
         # Categoria
         self._cat_combo = QComboBox()
         for label in _CATEGORY_LABELS:
             self._cat_combo.addItem(label)
-        # Pré-seleciona "Outros" para não confundir
-        idx = list(_CATEGORY_LABELS.keys()).index("Outros")
-        self._cat_combo.setCurrentIndex(idx)
+        self._cat_combo.setCurrentIndex(list(_CATEGORY_LABELS.keys()).index("Outros"))
         self._cat_combo.currentIndexChanged.connect(self._on_category_changed)
-        form.addRow("Categoria", self._cat_combo)
+        self._cat_lbl = QLabel("Categoria")
+        form.addRow(self._cat_lbl, self._cat_combo)
 
-        # Natureza (visível apenas para despesas)
-        self._nature_label = QLabel("Natureza")
+        # Natureza
         self._nature_combo = QComboBox()
         for label in ["Essencial", "Supérfluo", "Investimento"]:
             self._nature_combo.addItem(label)
-        self._nature_row_label = self._nature_label
-        form.addRow(self._nature_label, self._nature_combo)
+        self._nature_lbl = QLabel("Natureza")
+        form.addRow(self._nature_lbl, self._nature_combo)
 
-        # Conta bancária (opcional — transações de cartão não precisam)
+        # Conta bancária
         self._account_combo = QComboBox()
         self._account_combo.addItem("— Nenhuma —", userData=None)
         for acc in self._accounts:
-            label = f"{acc['name']} ({acc['bank_name']})"
-            self._account_combo.addItem(label, userData=acc["id"])
-        form.addRow("Conta", self._account_combo)
+            self._account_combo.addItem(
+                f"{acc['name']} ({acc['bank_name']})", userData=acc["id"]
+            )
+        self._account_lbl = QLabel("Conta *")
+        form.addRow(self._account_lbl, self._account_combo)
 
-        # Linha de crédito / Conta (visível apenas para despesas e transferências)
-        self._credit_line_label = QLabel("Linha de crédito")
-        self._credit_line_combo = QComboBox()
-        self._credit_line_combo.addItem("— Nenhuma —", userData=None)
-        # Contas no combo de crédito
-        for acc in self._accounts:
-            label = f"{acc['name']} ({acc['bank_name']}) — Conta"
-            self._credit_line_combo.addItem(label, userData=("account", acc["id"]))
-        # Cartões no combo de crédito
+        # Cartão de crédito
+        self._card_combo = QComboBox()
+        self._card_combo.addItem("— Nenhum —", userData=None)
         for card in self._cards:
-            label = f"{card['name']} - *{card.get('last_four_digits','????')} — Cartão"
-            self._credit_line_combo.addItem(label, userData=("card", card["id"], card))
-        self._credit_line_combo.currentIndexChanged.connect(self._on_credit_line_changed)
-        form.addRow(self._credit_line_label, self._credit_line_combo)
-
-        # Limite disponível (mostra quando cartão selecionado)
-        self._limit_label = QLabel("")
-        self._limit_label.setStyleSheet("color: #4A9EFF; font-size: 11px;")
-        self._limit_label.hide()
-        form.addRow("", self._limit_label)
+            self._card_combo.addItem(
+                f"{card['name']} •••• {card.get('last_four_digits', '????')}",
+                userData=card["id"],
+            )
+        self._card_lbl = QLabel("Cartão *")
+        form.addRow(self._card_lbl, self._card_combo)
 
         # Observações
         self._notes = QPlainTextEdit()
         self._notes.setPlaceholderText("Observações opcionais…")
-        self._notes.setMaximumHeight(80)
+        self._notes.setMaximumHeight(70)
         form.addRow("Observações", self._notes)
 
-        layout.addLayout(form)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+        return page
 
-        # Estado inicial: campos condicionais baseados no tipo padrão (Receita)
-        self._on_type_changed()
+    def _configure_form(self, tx_type: str) -> None:
+        """Mostra/oculta campos conforme o tipo selecionado."""
+        show_desc    = tx_type != "invoice"
+        show_cat     = tx_type in ("income", "debit", "credit")
+        show_nature  = tx_type in ("debit", "credit")
+        show_account = tx_type in ("income", "debit", "investment", "invoice")
+        show_card    = tx_type in ("credit", "invoice")
 
-        # Botões padrão: Cancelar e Salvar
-        # QDialogButtonBox gera botões com labels corretos para o idioma do OS;
-        # usamos Save/Cancel que o Qt traduz como "Salvar"/"Cancelar" em pt_BR.
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._on_accept)
-        buttons.rejected.connect(self.reject)
+        account_labels = {
+            "invoice":    "Conta de débito *",
+            "investment": "Conta / Corretora *",
+        }
+        self._account_lbl.setText(account_labels.get(tx_type, "Conta *"))
+        self._card_lbl.setText("Cartão *" if tx_type == "credit" else "Cartão (opcional)")
 
-        # Estiliza o botão primário de salvar
-        save_btn = buttons.button(QDialogButtonBox.StandardButton.Save)
-        if save_btn:
-            save_btn.setProperty("class", "success")
-            save_btn.style().unpolish(save_btn)
-            save_btn.style().polish(save_btn)
+        self._desc_lbl.setVisible(show_desc)
+        self._desc.setVisible(show_desc)
+        self._cat_lbl.setVisible(show_cat)
+        self._cat_combo.setVisible(show_cat)
+        self._nature_lbl.setVisible(show_nature)
+        self._nature_combo.setVisible(show_nature)
+        self._account_lbl.setVisible(show_account)
+        self._account_combo.setVisible(show_account)
+        self._card_lbl.setVisible(show_card)
+        self._card_combo.setVisible(show_card)
 
-        layout.addWidget(buttons)
+    # ------------------------------------------------------------------
+    # Navegação entre etapas
+    # ------------------------------------------------------------------
 
-    def _on_type_changed(self) -> None:
-        """Mostra campo Natureza apenas para despesas; linha de crédito para despesas/transferências."""
-        tx_type = self._type_combo.currentText()
-        is_expense  = tx_type == "Despesa"
-        needs_credit = tx_type in ("Despesa", "Transferência")
-        self._nature_label.setVisible(is_expense)
-        self._nature_combo.setVisible(is_expense)
-        self._credit_line_label.setVisible(needs_credit)
-        self._credit_line_combo.setVisible(needs_credit)
-        if not needs_credit:
-            self._limit_label.hide()
+    def _select_type(self, tx_type: str) -> None:
+        self._tx_type = tx_type
+        cfg = _TYPE_CONFIG[tx_type]
+        self._title_lbl.setText(f"Novo Lançamento — {cfg['label']}")
+        self._configure_form(tx_type)
+        self._stack.setCurrentIndex(1)
+        self._back_btn.setVisible(True)
+        self._save_btn.setVisible(True)
+        self._save_btn.style().unpolish(self._save_btn)
+        self._save_btn.style().polish(self._save_btn)
 
-    def _on_credit_line_changed(self) -> None:
-        """Mostra limite disponível quando um cartão é selecionado."""
-        data = self._credit_line_combo.currentData()
-        if data and isinstance(data, tuple) and data[0] == "card" and len(data) >= 3:
-            card = data[2]
-            limit = float(card.get("credit_limit", 0))
-            self._limit_label.setText(f"Limite total: R$ {limit:,.2f}".replace(",", "."))
-            self._limit_label.show()
+    def _go_to_type_page(self) -> None:
+        self._stack.setCurrentIndex(0)
+        self._back_btn.setVisible(False)
+        self._save_btn.setVisible(False)
+        self._title_lbl.setText("Novo Lançamento")
+        self._tx_type = None
+
+    # ------------------------------------------------------------------
+    # Validação e payload
+    # ------------------------------------------------------------------
+
+    def _on_accept(self) -> None:
+        if self._tx_type is None:
+            return
+        if not self._desc.isHidden() and not self._desc.text().strip():
+            QMessageBox.warning(self, "Campo obrigatório", "Informe a descrição do lançamento.")
+            self._desc.setFocus()
+            return
+        if self._amount.value() <= 0:
+            QMessageBox.warning(self, "Campo obrigatório", "O valor deve ser maior que zero.")
+            return
+        if (not self._account_combo.isHidden()
+                and self._account_combo.currentData() is None
+                and self._tx_type not in ("invoice", "credit")):
+            QMessageBox.warning(self, "Campo obrigatório", "Selecione uma conta.")
+            return
+        if self._tx_type == "credit" and self._card_combo.currentData() is None:
+            QMessageBox.warning(self, "Campo obrigatório", "Selecione um cartão de crédito.")
+            return
+        self.accept()
+
+    def get_payload(self) -> dict[str, Any]:
+        qdate = self._date_edit.date()
+        tx_date = date(qdate.year(), qdate.month(), qdate.day())
+        tx_type = self._tx_type or "debit"
+
+        payload: dict[str, Any] = {
+            "description": (
+                self._desc.text().strip() if not self._desc.isHidden()
+                else "Pagamento de fatura"
+            ),
+            "amount": f"{self._amount.value():.2f}",
+            "transaction_date": tx_date.isoformat(),
+            "transaction_type": tx_type,
+            "notes": self._notes.toPlainText().strip() or None,
+        }
+
+        if not self._cat_combo.isHidden():
+            payload["category"] = _CATEGORY_LABELS[self._cat_combo.currentText()]
+        elif tx_type == "investment":
+            payload["category"] = "investimento"
+        elif tx_type == "invoice":
+            payload["category"] = "cartao_credito"
         else:
-            self._limit_label.hide()
+            payload["category"] = "outros"
+
+        if not self._nature_combo.isHidden():
+            nature_api = _NATURE_LABELS.get(self._nature_combo.currentText())
+            if nature_api:
+                payload["expense_nature"] = nature_api
+        elif tx_type == "investment":
+            payload["expense_nature"] = "investment"
+
+        if not self._account_combo.isHidden():
+            account_id = self._account_combo.currentData()
+            if account_id is not None:
+                payload["account_id"] = account_id
+
+        if not self._card_combo.isHidden():
+            card_id = self._card_combo.currentData()
+            if card_id is not None:
+                payload["credit_card_id"] = card_id
+
+        return payload
 
     def _on_category_changed(self) -> None:
-        """Auto-seleciona natureza com base na categoria escolhida."""
         cat_api = _CATEGORY_LABELS.get(self._cat_combo.currentText(), "")
         nature  = _CAT_TO_NATURE.get(cat_api)
         if nature:
@@ -385,66 +602,24 @@ class NewTransactionDialog(QDialog):
             if idx >= 0:
                 self._nature_combo.setCurrentIndex(idx)
 
-    def _on_accept(self) -> None:
-        """Valida o formulário antes de aceitar o diálogo."""
-        if not self._desc.text().strip():
-            QMessageBox.warning(self, "Campo obrigatório", "Informe a descrição do lançamento.")
-            self._desc.setFocus()
-            return
-        if self._amount.value() <= 0:
-            QMessageBox.warning(self, "Campo obrigatório", "O valor deve ser maior que zero.")
-            self._amount.setFocus()
-            return
-        self.accept()
-
-    def get_payload(self) -> dict[str, Any]:
-        """
-        Retorna o dicionário pronto para enviar ao POST /transactions.
-
-        Converte os valores exibidos para os valores esperados pela API
-        (strings de enum, datas em ISO, Decimal serializado como string).
-        """
-        qdate = self._date_edit.date()
-        tx_date = date(qdate.year(), qdate.month(), qdate.day())
-
-        tx_type = _TYPE_LABELS[self._type_combo.currentText()]
-        payload: dict[str, Any] = {
-            "description": self._desc.text().strip(),
-            # Serializa como string para compatibilidade JSON com Decimal
-            "amount": f"{self._amount.value():.2f}",
-            "transaction_date": tx_date.isoformat(),
-            "transaction_type": tx_type,
-            "category": _CATEGORY_LABELS[self._cat_combo.currentText()],
-            "notes": self._notes.toPlainText().strip() or None,
-        }
-
-        # Inclui natureza apenas para despesas
-        if tx_type == "despesa" and self._nature_combo.isVisible():
-            nature_display = self._nature_combo.currentText()
-            payload["expense_nature"] = _NATURE_LABELS.get(nature_display)
-
-        account_id = self._account_combo.currentData()
-        if account_id is not None:
-            payload["account_id"] = account_id
-
-        # Linha de crédito selecionada (conta ou cartão)
-        cl_data = self._credit_line_combo.currentData()
-        if cl_data and isinstance(cl_data, tuple):
-            if cl_data[0] == "account" and not payload.get("account_id"):
-                payload["account_id"] = cl_data[1]
-            elif cl_data[0] == "card":
-                payload["credit_card_id"] = cl_data[1]
-
-        return payload
-
 
 class EditTransactionDialog(NewTransactionDialog):
-    """Formulário modal para editar um lançamento existente (pré-preenchido)."""
+    """Formulário de edição — pula a seleção de tipo, vai direto ao formulário."""
 
-    def __init__(self, tx: dict[str, Any], accounts: list[dict], cards: list[dict] | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        tx: dict[str, Any],
+        accounts: list[dict],
+        cards: list[dict] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(accounts, cards, parent)
         self.setWindowTitle("Editar Lançamento")
         self._tx_id = tx["id"]
+        # Pula etapa 1: vai direto ao formulário com o tipo do lançamento
+        self._select_type(tx.get("transaction_type", "debit"))
+        self._back_btn.setVisible(False)
+        self._title_lbl.setText("Editar Lançamento")
         self._prefill(tx)
 
     def _prefill(self, tx: dict[str, Any]) -> None:
@@ -457,23 +632,14 @@ class EditTransactionDialog(NewTransactionDialog):
 
         iso = tx.get("transaction_date", "")
         if iso:
-            from PyQt6.QtCore import QDate
             try:
                 d = date.fromisoformat(iso)
                 self._date_edit.setDate(QDate(d.year, d.month, d.day))
             except (ValueError, TypeError):
                 pass
 
-        _type_rev = {v: k for k, v in _TYPE_LABELS.items()}
-        tx_type = tx.get("transaction_type", "despesa")
-        display = _type_rev.get(tx_type, "Despesa")
-        idx = self._type_combo.findText(display)
-        if idx >= 0:
-            self._type_combo.setCurrentIndex(idx)
-
         _cat_rev = {v: k for k, v in _CATEGORY_LABELS.items()}
-        cat = tx.get("category", "outros")
-        cat_display = _cat_rev.get(cat, "Outros")
+        cat_display = _cat_rev.get(tx.get("category", "outros"), "Outros")
         idx = self._cat_combo.findText(cat_display)
         if idx >= 0:
             self._cat_combo.setCurrentIndex(idx)
@@ -485,8 +651,14 @@ class EditTransactionDialog(NewTransactionDialog):
                     self._account_combo.setCurrentIndex(i)
                     break
 
-        notes = tx.get("notes") or ""
-        self._notes.setPlainText(notes)
+        card_id = tx.get("credit_card_id")
+        if card_id is not None:
+            for i in range(self._card_combo.count()):
+                if self._card_combo.itemData(i) == card_id:
+                    self._card_combo.setCurrentIndex(i)
+                    break
+
+        self._notes.setPlainText(tx.get("notes") or "")
 
         nature = tx.get("expense_nature")
         if nature:
@@ -501,7 +673,13 @@ class EditTransactionDialog(NewTransactionDialog):
 # ======================================================================
 
 # Mapeamento valor da API → label exibido na tabela
-_TYPE_DISPLAY = {"receita": "Receita", "despesa": "Despesa", "transferencia": "Transferência"}
+_TYPE_DISPLAY = {
+    "income":     "Receita",
+    "debit":      "Débito",
+    "credit":     "Crédito",
+    "investment": "Investimento",
+    "invoice":    "Pag. Fatura",
+}
 _CAT_DISPLAY = {v: k for k, v in _CATEGORY_LABELS.items()}
 
 # Colunas da tabela (índices usados em todas as referências)
@@ -806,6 +984,11 @@ class TransactionsPage(QWidget):
         self._cards: list[dict] = []
         self._debts: list[dict] = []
 
+        # Estado do navegador de meses (0 = todos os meses)
+        today = date.today()
+        self._nav_year:  int = today.year
+        self._nav_month: int = today.month
+
         self._build_ui()
         self.load_data()
 
@@ -841,6 +1024,7 @@ class TransactionsPage(QWidget):
         main.setSpacing(16)
 
         main.addLayout(self._build_toolbar())
+        main.addWidget(self._build_month_header())
 
         self._loading_label = QLabel("Carregando lançamentos…")
         self._loading_label.setObjectName("loadingLabel")
@@ -902,7 +1086,7 @@ class TransactionsPage(QWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_DEBT_COL_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(_DEBT_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_DEBT_COL_ACTIONS, 80)
+        table.setColumnWidth(_DEBT_COL_ACTIONS, 76)
         return table
 
     def _build_toolbar(self) -> QHBoxLayout:
@@ -924,17 +1108,11 @@ class TransactionsPage(QWidget):
 
         # Filtro de tipo — client-side
         self._type_filter = QComboBox()
-        self._type_filter.addItems(["Todos os tipos", "Receita", "Despesa", "Transferência"])
+        self._type_filter.addItems([
+            "Todos os tipos", "Receita", "Débito", "Crédito", "Investimento", "Pag. Fatura"
+        ])
         self._type_filter.currentIndexChanged.connect(self._apply_filters)
         bar.addWidget(self._type_filter)
-
-        # Filtro de mês — dispara nova requisição ao mudar
-        self._month_filter = QComboBox()
-        self._month_filter.setMinimumWidth(140)
-        self._populate_month_combo()
-        # connect após populat para evitar requisição na inicialização
-        self._month_filter.currentIndexChanged.connect(self._on_month_changed)
-        bar.addWidget(self._month_filter)
 
         # Filtro de natureza — client-side
         self._nature_filter = QComboBox()
@@ -956,30 +1134,87 @@ class TransactionsPage(QWidget):
 
         return bar
 
-    def _populate_month_combo(self) -> None:
-        """
-        Preenche o combo de mês com os últimos 12 meses + opção "Todos".
+    def _build_month_header(self) -> QWidget:
+        """Cabeçalho de seção com navegador de meses centralizado."""
+        header = QWidget()
+        header.setObjectName("monthHeader")
+        header.setStyleSheet(
+            "QWidget#monthHeader { background: #222640; border-radius: 8px; }"
+        )
 
-        Usa addItem com userData=(start_date, end_date) para facilitar
-        a extração do período na _on_month_changed sem precisar parsear strings.
-        """
+        lay = QHBoxLayout(header)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(8)
+
+        self._prev_month_btn = QPushButton("◀")
+        self._prev_month_btn.setFixedSize(32, 32)
+        self._prev_month_btn.setToolTip("Mês anterior")
+        self._prev_month_btn.clicked.connect(self._on_prev_month)
+
+        self._month_nav_label = QLabel()
+        self._month_nav_label.setMinimumWidth(180)
+        self._month_nav_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._month_nav_label.setStyleSheet(
+            "color: #E8EAED; font-weight: 700; font-size: 15px; background: transparent;"
+        )
+
+        self._next_month_btn = QPushButton("▶")
+        self._next_month_btn.setFixedSize(32, 32)
+        self._next_month_btn.setToolTip("Próximo mês")
+        self._next_month_btn.clicked.connect(self._on_next_month)
+
+        lay.addStretch()
+        lay.addWidget(self._prev_month_btn)
+        lay.addWidget(self._month_nav_label)
+        lay.addWidget(self._next_month_btn)
+        lay.addStretch()
+
+        self._update_month_nav()
+        return header
+
+    def _update_month_nav(self) -> None:
+        """Atualiza label e estado dos botões do navegador de meses."""
         today = date.today()
-        self._month_filter.addItem("Todos os meses", userData=(None, None))
-        self._month_filter.addItem("Mês atual", userData=_month_range(today))
+        if self._nav_month == 0:
+            self._month_nav_label.setText("Todos os meses")
+            self._next_month_btn.setEnabled(False)
+        else:
+            self._month_nav_label.setText(
+                f"{_MONTHS_FULL[self._nav_month]} {self._nav_year}"
+            )
+            at_current = (
+                self._nav_year == today.year and self._nav_month == today.month
+            )
+            self._next_month_btn.setEnabled(not at_current)
 
-        # Meses anteriores em ordem decrescente (mais recente primeiro)
-        for delta in range(1, 12):
-            # Calcula mês anterior sem usar timedelta (evita complexidade de dias)
-            month = today.month - delta
-            year = today.year
-            while month <= 0:
-                month += 12
-                year -= 1
-            label = _month_label(year, month)
-            self._month_filter.addItem(label, userData=_month_range(date(year, month, 1)))
+    def _on_prev_month(self) -> None:
+        """Navega para o mês anterior (ou sai do modo 'todos')."""
+        if self._nav_month == 0:
+            today = date.today()
+            self._nav_year, self._nav_month = today.year, today.month
+        else:
+            m = self._nav_month - 1
+            y = self._nav_year
+            if m <= 0:
+                m, y = 12, y - 1
+            self._nav_month, self._nav_year = m, y
+        self._update_month_nav()
+        self.load_data()
 
-        # Seleciona "Mês atual" como padrão (índice 1)
-        self._month_filter.setCurrentIndex(1)
+    def _on_next_month(self) -> None:
+        """Navega para o mês seguinte (limitado ao mês atual)."""
+        today = date.today()
+        if self._nav_month == 0:
+            return
+        m = self._nav_month + 1
+        y = self._nav_year
+        if m > 12:
+            m, y = 1, y + 1
+        if y > today.year or (y == today.year and m > today.month):
+            return
+        self._nav_month, self._nav_year = m, y
+        self._update_month_nav()
+        self.load_data()
 
     def _build_table(self) -> QTableWidget:
         """
@@ -993,14 +1228,14 @@ class TransactionsPage(QWidget):
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setAlternatingRowColors(True)
+        table.setAlternatingRowColors(False)
         table.verticalHeader().setVisible(False)
 
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_COL_DESC, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_ACTIONS, 50)
+        table.setColumnWidth(_COL_ACTIONS, 40)
 
         return table
 
@@ -1046,7 +1281,11 @@ class TransactionsPage(QWidget):
         if self._worker and self._worker.isRunning():
             return
 
-        start, end = self._month_filter.currentData() or (None, None)
+        if self._nav_month == 0:
+            start, end = None, None
+        else:
+            nav_date = date(self._nav_year, self._nav_month, 1)
+            start, end = _month_range(nav_date)
 
         self._table.setVisible(False)
         self._loading_label.setText("Carregando lançamentos…")
@@ -1078,10 +1317,6 @@ class TransactionsPage(QWidget):
     def _on_error(self, message: str) -> None:
         self._loading_label.setText(f"Erro ao carregar: {message}")
         self._table.setVisible(False)
-
-    def _on_month_changed(self) -> None:
-        """Mês mudou → nova requisição ao servidor."""
-        self.load_data()
 
     def _apply_filters(self) -> None:
         """
@@ -1119,15 +1354,19 @@ class TransactionsPage(QWidget):
         """Preenche a tabela com as transações filtradas."""
         self._table.setRowCount(len(transactions))
 
+        _AMOUNT_COLORS = {
+            "income":     "#00C896",
+            "debit":      "#FF6B6B",
+            "credit":     "#FF6B6B",
+            "investment": "#4A9EFF",
+            "invoice":    "#8B90A7",
+        }
+
         for row, tx in enumerate(transactions):
             tx_type = tx.get("transaction_type", "")
             amount = float(tx.get("amount", 0))
-            # Receitas em verde, despesas em vermelho, transferências em azul
-            amount_color = (
-                "#00C896" if tx_type == "receita"
-                else "#FF6B6B" if tx_type == "despesa"
-                else "#4A9EFF"
-            )
+            amount_color = _AMOUNT_COLORS.get(tx_type, "#E8EAED")
+            row_bg = _ROW_BG.get(tx_type)
 
             expense_nature = tx.get("expense_nature")
             cat_text = _CAT_DISPLAY.get(tx.get("category", ""), tx.get("category", ""))
@@ -1138,13 +1377,16 @@ class TransactionsPage(QWidget):
                 (cat_text, "#8B90A7"),
                 (self._account_map.get(tx.get("account_id"), "—"), "#8B90A7"),
                 (_TYPE_DISPLAY.get(tx_type, tx_type), "#8B90A7"),
-                (_fmt_brl(amount if tx_type == "receita" else -amount if tx_type == "despesa" else amount), amount_color),
+                (_fmt_brl(amount if tx_type == "income" else -amount), amount_color),
             ]
 
             for col, (text, color) in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
-                if col == _COL_CAT and expense_nature and tx_type == "despesa":
+                if row_bg:
+                    item.setBackground(QColor(row_bg))
+                if col == _COL_CAT and expense_nature and tx_type in ("debit", "credit"):
+                    # badge de natureza sobrepõe o fundo da linha
                     bg_dark, fg = _NATURE_BADGE_COLORS.get(expense_nature, ("#2A2D3E", "#8B90A7"))
                     item.setBackground(QColor(bg_dark))
                     item.setForeground(QColor(fg))
@@ -1154,20 +1396,19 @@ class TransactionsPage(QWidget):
                     )
                 self._table.setItem(row, col, item)
 
-            edit_btn = QPushButton("✏️")
-            edit_btn.setToolTip("Editar lançamento")
+            edit_btn, cell = _icon_btn("✏️", "Editar lançamento")
             edit_btn.clicked.connect(lambda _, t=tx: self._open_edit_dialog(t))
-            self._table.setCellWidget(row, _COL_ACTIONS, edit_btn)
+            self._table.setCellWidget(row, _COL_ACTIONS, cell)
 
     def _refresh_totals(self, transactions: list[dict]) -> None:
         """Recalcula e exibe os totais de receitas, despesas e saldo."""
         income = sum(
             float(tx["amount"]) for tx in transactions
-            if tx.get("transaction_type") == "receita"
+            if tx.get("transaction_type") == "income"
         )
         expense = sum(
             float(tx["amount"]) for tx in transactions
-            if tx.get("transaction_type") == "despesa"
+            if tx.get("transaction_type") in ("debit", "credit", "investment")
         )
         balance = income - expense
         balance_color = "#00C896" if balance >= 0 else "#FF6B6B"
@@ -1194,7 +1435,7 @@ class TransactionsPage(QWidget):
         if self._update_worker and self._update_worker.isRunning():
             return
         self._update_worker = UpdateTransactionWorker(self._client, tx_id, payload)
-        self._update_worker.updated.connect(lambda _: self.load_data())
+        self._update_worker.updated.connect(lambda _: (app_signals.data_changed.emit(), self.load_data()))
         self._update_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
         )
@@ -1225,6 +1466,7 @@ class TransactionsPage(QWidget):
 
     def _on_saved(self) -> None:
         """Lançamento salvo com sucesso — recarrega a tabela."""
+        app_signals.data_changed.emit()
         self.load_data()
 
     def _on_save_error(self, message: str) -> None:
@@ -1272,18 +1514,18 @@ class TransactionsPage(QWidget):
             # Ações: editar + excluir
             actions_widget = QWidget()
             actions_layout = QHBoxLayout(actions_widget)
-            actions_layout.setContentsMargins(2, 2, 2, 2)
+            actions_layout.setContentsMargins(4, 2, 4, 2)
             actions_layout.setSpacing(4)
+            actions_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            edit_btn = QPushButton("✏")
-            edit_btn.setFixedWidth(28)
+            edit_btn = QPushButton("✏️")
+            edit_btn.setFixedSize(32, 32)
             edit_btn.setToolTip("Editar dívida")
             edit_btn.clicked.connect(lambda _, d=debt: self._open_edit_debt_dialog(d))
 
-            del_btn = QPushButton("✕")
-            del_btn.setFixedWidth(28)
+            del_btn = QPushButton("🗑️")
+            del_btn.setFixedSize(32, 32)
             del_btn.setToolTip("Excluir dívida")
-            del_btn.setStyleSheet("QPushButton { color: #FF6B6B; }")
             del_btn.clicked.connect(lambda _, d=debt: self._delete_debt(d))
 
             actions_layout.addWidget(edit_btn)
@@ -1302,7 +1544,7 @@ class TransactionsPage(QWidget):
         if self._save_debt_worker and self._save_debt_worker.isRunning():
             return
         self._save_debt_worker = SaveDebtWorker(self._client, payload)
-        self._save_debt_worker.saved.connect(lambda _: self._load_debts())
+        self._save_debt_worker.saved.connect(lambda _: (app_signals.data_changed.emit(), self._load_debts()))
         self._save_debt_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao salvar dívida", msg)
         )
@@ -1316,7 +1558,7 @@ class TransactionsPage(QWidget):
         if self._update_debt_worker and self._update_debt_worker.isRunning():
             return
         self._update_debt_worker = UpdateDebtWorker(self._client, debt["id"], payload)
-        self._update_debt_worker.updated.connect(lambda _: self._load_debts())
+        self._update_debt_worker.updated.connect(lambda _: (app_signals.data_changed.emit(), self._load_debts()))
         self._update_debt_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao atualizar dívida", msg)
         )
@@ -1334,7 +1576,7 @@ class TransactionsPage(QWidget):
         if self._delete_debt_worker and self._delete_debt_worker.isRunning():
             return
         self._delete_debt_worker = DeleteDebtWorker(self._client, debt["id"])
-        self._delete_debt_worker.done.connect(self._load_debts)
+        self._delete_debt_worker.done.connect(lambda: (app_signals.data_changed.emit(), self._load_debts()))
         self._delete_debt_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao excluir dívida", msg)
         )
@@ -1344,6 +1586,19 @@ class TransactionsPage(QWidget):
 # ======================================================================
 # Utilitários
 # ======================================================================
+
+
+def _icon_btn(icon: str, tooltip: str) -> tuple["QPushButton", "QWidget"]:
+    """Retorna (botão, container) com botão de ícone 32×32 centralizado na célula."""
+    container = QWidget()
+    lay = QHBoxLayout(container)
+    lay.setContentsMargins(4, 2, 4, 2)
+    lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    btn = QPushButton(icon)
+    btn.setFixedSize(32, 32)
+    btn.setToolTip(tooltip)
+    lay.addWidget(btn)
+    return btn, container
 
 
 def _month_range(ref: date) -> tuple[date, date]:

@@ -1330,7 +1330,7 @@ class InvestmentsPage(QWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_ACTIONS, 50)
+        table.setColumnWidth(_COL_ACTIONS, 40)
 
         return table
 
@@ -1474,10 +1474,16 @@ class InvestmentsPage(QWidget):
                 self._table.setItem(row, col, item)
 
             asset_id = pos["asset_id"]
+            cell_w = QWidget()
+            cell_lay = QHBoxLayout(cell_w)
+            cell_lay.setContentsMargins(4, 2, 4, 2)
+            cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
             edit_btn = QPushButton("✏️")
+            edit_btn.setFixedSize(32, 32)
             edit_btn.setToolTip("Editar ativo")
             edit_btn.clicked.connect(lambda _, aid=asset_id: self._open_edit_asset_dialog(aid))
-            self._table.setCellWidget(row, _COL_ACTIONS, edit_btn)
+            cell_lay.addWidget(edit_btn)
+            self._table.setCellWidget(row, _COL_ACTIONS, cell_w)
 
     def _populate_liquidity(self, liquidity: dict, total_portfolio: float) -> None:
         d0 = float(liquidity.get("d0_value", 0))

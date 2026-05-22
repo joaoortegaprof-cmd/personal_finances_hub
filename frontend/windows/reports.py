@@ -357,16 +357,16 @@ class ReportsPage(QWidget):
         if not transactions:
             return "<p>Nenhum lançamento encontrado no período.</p>"
 
-        income = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") == "receita")
-        expense = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") == "despesa")
+        income = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") == "income")
+        expense = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") in ("debit", "credit", "investment"))
         balance = income - expense
 
         rows = ""
         for t in sorted(transactions, key=lambda x: x.get("transaction_date", "")):
             tx_type = t.get("transaction_type", "")
             amount = float(t.get("amount", 0))
-            cls = "receita" if tx_type == "receita" else "despesa" if tx_type == "despesa" else ""
-            sign = "+" if tx_type == "receita" else "-" if tx_type == "despesa" else ""
+            cls = "receita" if tx_type == "income" else "despesa" if tx_type in ("debit", "credit", "investment") else ""
+            sign = "+" if tx_type == "income" else "-" if tx_type in ("debit", "credit", "investment") else ""
             acc_name = accounts.get(t.get("account_id"), "—")
             rows += f"""<tr>
               <td>{_fmt_date(t.get('transaction_date',''))}</td>
@@ -403,14 +403,14 @@ class ReportsPage(QWidget):
         if not transactions:
             return "<p>Nenhum lançamento encontrado no período.</p>"
 
-        income = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") == "receita")
-        expense = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") == "despesa")
+        income = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") == "income")
+        expense = sum(float(t["amount"]) for t in transactions if t.get("transaction_type") in ("debit", "credit", "investment"))
         balance = income - expense
         rate = (balance / income * 100) if income > 0 else 0
 
         cats: dict[str, float] = {}
         for t in transactions:
-            if t.get("transaction_type") == "despesa":
+            if t.get("transaction_type") in ("debit", "credit"):
                 cat = t.get("category", "outros")
                 cats[cat] = cats.get(cat, 0) + float(t.get("amount", 0))
 

@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from frontend.components.signals import app_signals
 from frontend.windows.accounts import AccountsPage
 from frontend.windows.cards import CardsPage
 from frontend.windows.dashboard import DashboardPage
@@ -167,8 +168,14 @@ class MainWindow(QMainWindow):
             layout.addWidget(btn)
             self._nav_buttons.append(btn)
 
-        # Empurra os botões para o topo; rodapé pode receber versão/usuário futuramente
         layout.addStretch()
+
+        # Rodapé da sidebar: botão de atualização global
+        refresh_btn = QPushButton("↻  Atualizar")
+        refresh_btn.setObjectName("navRefreshButton")
+        refresh_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        refresh_btn.clicked.connect(self._refresh_current_page)
+        layout.addWidget(refresh_btn)
 
         return sidebar
 
@@ -252,6 +259,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Navegação
     # ------------------------------------------------------------------
+
+    def _refresh_current_page(self) -> None:
+        page = self.stack.currentWidget()
+        load = getattr(page, "load_data", None)
+        if callable(load):
+            load()
 
     def _navigate(self, index: int) -> None:
         """Troca de página e sincroniza o estado visual da sidebar e do header."""

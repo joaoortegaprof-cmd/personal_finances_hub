@@ -55,6 +55,7 @@ class CreditCardCreate(BaseModel):
     closing_day: int = Field(ge=1, le=28)
     due_day: int = Field(ge=1, le=28)
     payment_account_id: int | None = None
+    card_color: str = Field(default="#7B61FF", max_length=7)
 
 
 class CreditCardOut(BaseModel):
@@ -68,6 +69,7 @@ class CreditCardOut(BaseModel):
     closing_day: int
     due_day: int
     payment_account_id: int | None
+    card_color: str
     created_at: datetime
     updated_at: datetime
 
@@ -79,6 +81,7 @@ class CreditCardUpdate(BaseModel):
     closing_day: int | None = Field(default=None, ge=1, le=28)
     due_day: int | None = Field(default=None, ge=1, le=28)
     payment_account_id: int | None = None
+    card_color: str | None = Field(default=None, max_length=7)
 
 
 class CreditCardInvoiceCreate(BaseModel):

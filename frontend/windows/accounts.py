@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.signals import app_signals
 
 
 # ======================================================================
@@ -401,7 +402,7 @@ class AccountsPage(QWidget):
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_ACTIONS, 170)
+        table.setColumnWidth(_COL_ACTIONS, 76)
 
         return table
 
@@ -454,21 +455,20 @@ class AccountsPage(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._table.setItem(row, col, item)
 
-            # Container com botões Editar e Excluir
             actions = QWidget()
             actions_layout = QHBoxLayout(actions)
             actions_layout.setContentsMargins(4, 2, 4, 2)
             actions_layout.setSpacing(4)
+            actions_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             edit_btn = QPushButton("✏️")
+            edit_btn.setFixedSize(32, 32)
             edit_btn.setToolTip("Editar conta")
-            edit_btn.setFixedWidth(36)
             edit_btn.clicked.connect(lambda _, a=acc: self._open_edit_dialog(a))
 
-            del_btn = QPushButton("Excluir")
-            del_btn.setProperty("class", "danger")
-            del_btn.style().unpolish(del_btn)
-            del_btn.style().polish(del_btn)
+            del_btn = QPushButton("🗑️")
+            del_btn.setFixedSize(32, 32)
+            del_btn.setToolTip("Excluir conta")
             del_btn.clicked.connect(lambda _, a=acc: self._confirm_delete(a))
 
             actions_layout.addWidget(edit_btn)
@@ -490,7 +490,7 @@ class AccountsPage(QWidget):
         if self._save_worker and self._save_worker.isRunning():
             return
         self._save_worker = SaveAccountWorker(self._client, payload)
-        self._save_worker.saved.connect(lambda _: self.load_data())
+        self._save_worker.saved.connect(lambda _: (app_signals.data_changed.emit(), self.load_data()))
         self._save_worker.error_occurred.connect(self._on_save_error)
         self._save_worker.start()
 
@@ -512,7 +512,7 @@ class AccountsPage(QWidget):
         if self._update_worker and self._update_worker.isRunning():
             return
         self._update_worker = UpdateAccountWorker(self._client, account_id, payload)
-        self._update_worker.updated.connect(lambda _: self.load_data())
+        self._update_worker.updated.connect(lambda _: (app_signals.data_changed.emit(), self.load_data()))
         self._update_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
         )
@@ -539,7 +539,7 @@ class AccountsPage(QWidget):
         if self._delete_worker and self._delete_worker.isRunning():
             return
         self._delete_worker = DeleteAccountWorker(self._client, account_id)
-        self._delete_worker.deleted.connect(self.load_data)
+        self._delete_worker.deleted.connect(lambda: (app_signals.data_changed.emit(), self.load_data()))
         self._delete_worker.error_occurred.connect(
             lambda msg: QMessageBox.critical(self, "Erro ao excluir", msg)
         )

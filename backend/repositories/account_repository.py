@@ -77,17 +77,16 @@ class AccountRepository(BaseRepository[Account]):
         Considera apenas transações a partir de initial_balance_date,
         evitando reprocessar histórico anterior ao cadastro no sistema.
 
-        Transações de TRANSFERÊNCIA são tratadas como saída — pressupõe
-        que cada transferência gera dois lançamentos: um de saída na
-        conta origem e um de entrada na conta destino.
+        CREDIT_EXPENSE tem account_id=NULL e é excluído explicitamente;
+        os demais tipos de saída (DEBIT_EXPENSE, INVOICE_PAYMENT, INVESTMENT)
+        subtraem do saldo.
         """
         account = await self.get_by_id(account_id)
         if account is None:
             raise ValueError(f"Conta {account_id} não encontrada.")
 
-        # CASE expression do SQLAlchemy: receitas somam, despesas e
-        # transferências subtraem. func.coalesce trata o caso em que
-        # não há nenhuma transação (SUM retornaria NULL).
+        # INCOME soma; DEBIT_EXPENSE / INVOICE_PAYMENT / INVESTMENT subtraem.
+        # CREDIT_EXPENSE naturalmente tem account_id=NULL e não aparece aqui.
         signed_amount = case(
             (Transaction.transaction_type == TransactionType.INCOME, Transaction.amount),
             else_=-Transaction.amount,
@@ -97,6 +96,7 @@ class AccountRepository(BaseRepository[Account]):
             select(func.coalesce(func.sum(signed_amount), Decimal("0.00"))).where(
                 Transaction.account_id == account_id,
                 Transaction.transaction_date >= account.initial_balance_date,
+                Transaction.transaction_type != TransactionType.CREDIT_EXPENSE,
             )
         )
         delta: Decimal = result.scalar_one()
