@@ -26,6 +26,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -45,13 +46,32 @@ _SETTINGS_PATH = Path(__file__).parent.parent.parent / "data" / "settings.json"
 
 # Valores padrão usados na primeira execução ou se o arquivo estiver corrompido
 _DEFAULTS: dict = {
-    "savings_rate_goal_pct": 20.0,
+    "savings_rate_goal_pct":   20.0,
     "monthly_income_estimate": 0.0,
-    "emergency_fund_months": 6,
-    "invoice_alert_days": 3,
-    "maturity_alert_days": 30,
-    "savings_alert_pct": 15.0,
+    "emergency_fund_months":   6,
+    "invoice_alert_days":      3,
+    "maturity_alert_days":     30,
+    "savings_alert_pct":       15.0,
+    "debt_alert_days":         3,
+    "recurring_alert_days":    7,
+    "min_liquidity":           0.0,
+    # Alertas habilitados — lista de alert_type.value; None = todos
+    "enabled_alerts": None,
 }
+
+# Todos os tipos de alerta disponíveis com rótulo amigável
+_ALL_ALERT_TYPES = [
+    ("darf",             "DARF de renda variável"),
+    ("fatura_vencendo",  "Fatura de cartão vencendo"),
+    ("renda_fixa",       "Vencimento de renda fixa/Tesouro"),
+    ("taxa_poupanca",    "Taxa de poupança abaixo da meta"),
+    ("come_cotas",       "Come-cotas de fundos (lembrete)"),
+    ("parcela_divida",   "Parcela de dívida vencendo"),
+    ("recorrente",       "Gasto recorrente vencendo"),
+    ("liquidez_baixa",   "Liquidez imediata abaixo do mínimo"),
+    ("rebalanceamento",  "Ativo fora da alocação-alvo"),
+    ("juros_altos",      "Juros de dívida acima do benchmark"),
+]
 
 
 def load_settings() -> dict:
@@ -137,8 +157,8 @@ class SettingsPage(QWidget):
         goals_box.layout().addLayout(goals_form)
         main.addWidget(goals_box)
 
-        # --- Alertas ---
-        alerts_box = self._build_group("Alertas")
+        # --- Alertas — Limites ---
+        alerts_box = self._build_group("Limites de Alerta")
         alerts_form = QFormLayout()
         alerts_form.setSpacing(14)
         alerts_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -153,8 +173,31 @@ class SettingsPage(QWidget):
         self._savings_alert.setValue(15.0)
         alerts_form.addRow("Alertar se taxa de poupança ficar abaixo de:", self._savings_alert)
 
+        self._debt_days = _int_spin(1, 30, 3)
+        alerts_form.addRow("Alertar parcelas de dívidas nos próximos:", _with_unit(self._debt_days, "dias"))
+
+        self._recurring_days = _int_spin(1, 30, 7)
+        alerts_form.addRow("Alertar recorrentes nos próximos:", _with_unit(self._recurring_days, "dias"))
+
+        self._min_liquidity = _money_spin()
+        alerts_form.addRow("Mínimo de liquidez imediata (D+0):", self._min_liquidity)
+
         alerts_box.layout().addLayout(alerts_form)
         main.addWidget(alerts_box)
+
+        # --- Alertas — Tipos ativos ---
+        enabled_box = self._build_group("Tipos de Alerta Ativos")
+        enabled_lay = QVBoxLayout()
+        enabled_lay.setSpacing(8)
+        self._alert_checks: dict[str, QCheckBox] = {}
+        for value, label in _ALL_ALERT_TYPES:
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            cb.setStyleSheet("color: #C8CAD8; font-size: 13px;")
+            self._alert_checks[value] = cb
+            enabled_lay.addWidget(cb)
+        enabled_box.layout().addLayout(enabled_lay)
+        main.addWidget(enabled_box)
 
         # --- Rodapé informativo ---
         info = QLabel(
@@ -208,15 +251,29 @@ class SettingsPage(QWidget):
         self._invoice_days.setValue(cfg.get("invoice_alert_days", 3))
         self._maturity_days.setValue(cfg.get("maturity_alert_days", 30))
         self._savings_alert.setValue(cfg.get("savings_alert_pct", 15.0))
+        self._debt_days.setValue(cfg.get("debt_alert_days", 3))
+        self._recurring_days.setValue(cfg.get("recurring_alert_days", 7))
+        self._min_liquidity.setValue(cfg.get("min_liquidity", 0.0))
+        enabled = cfg.get("enabled_alerts")  # None = todos
+        for value, cb in self._alert_checks.items():
+            cb.setChecked(enabled is None or value in enabled)
 
     def _save(self) -> None:
+        enabled = [v for v, cb in self._alert_checks.items() if cb.isChecked()]
+        # None means all enabled; using explicit list only if some are unchecked
+        enabled_val = None if len(enabled) == len(_ALL_ALERT_TYPES) else ",".join(enabled)
+
         cfg = {
-            "savings_rate_goal_pct": self._savings_goal.value(),
+            "savings_rate_goal_pct":   self._savings_goal.value(),
             "monthly_income_estimate": self._income_estimate.value(),
-            "emergency_fund_months": self._emergency_months.value(),
-            "invoice_alert_days": self._invoice_days.value(),
-            "maturity_alert_days": self._maturity_days.value(),
-            "savings_alert_pct": self._savings_alert.value(),
+            "emergency_fund_months":   self._emergency_months.value(),
+            "invoice_alert_days":      self._invoice_days.value(),
+            "maturity_alert_days":     self._maturity_days.value(),
+            "savings_alert_pct":       self._savings_alert.value(),
+            "debt_alert_days":         self._debt_days.value(),
+            "recurring_alert_days":    self._recurring_days.value(),
+            "min_liquidity":           self._min_liquidity.value(),
+            "enabled_alerts":          enabled_val,
         }
         try:
             save_settings(cfg)

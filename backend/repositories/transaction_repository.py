@@ -181,6 +181,30 @@ class TransactionRepository(BaseRepository[Transaction]):
         }
 
     # -----------------------------------------------------------------
+    # Gastos por categoria (para análise de padrões)
+    # -----------------------------------------------------------------
+
+    async def sum_expense_by_category(
+        self, start_date: date, end_date: date
+    ) -> dict[str, float]:
+        """
+        Retorna o total gasto por categoria no período.
+        Considera DEBIT_EXPENSE e CREDIT_EXPENSE (excluindo INVESTMENT).
+        """
+        expense_types = [TransactionType.DEBIT_EXPENSE, TransactionType.CREDIT_EXPENSE]
+        stmt = (
+            select(Transaction.category, func.sum(Transaction.amount).label("total"))
+            .where(
+                Transaction.transaction_type.in_(expense_types),
+                Transaction.transaction_date >= start_date,
+                Transaction.transaction_date <= end_date,
+            )
+            .group_by(Transaction.category)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return {str(row.category): float(row.total) for row in rows}
+
+    # -----------------------------------------------------------------
     # Transações recorrentes
     # -----------------------------------------------------------------
 

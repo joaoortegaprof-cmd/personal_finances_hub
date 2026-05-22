@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas.dashboard import (
+    AlertHistoryItemOut,
+    AlertHistoryOut,
     AlertOut,
     AlertsOut,
     DashboardOut,
@@ -18,6 +20,7 @@ from backend.api.schemas.dashboard import (
     NetWorthOut,
 )
 from backend.core.database import get_db
+from backend.repositories.alert_history_repository import AlertHistoryRepository
 from backend.services.alert_service import AlertService
 from backend.services.financial_summary_service import FinancialSummaryService
 
@@ -63,33 +66,42 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
 
 @router.get("/alerts", response_model=AlertsOut)
 async def get_alerts(
-    invoice_due_days: Annotated[
-        int,
-        Query(ge=1, le=30, description="Dias de antecedência para alertar faturas de cartão"),
-    ] = 3,
-    maturity_days_ahead: Annotated[
-        int,
-        Query(ge=1, le=365, description="Horizonte em dias para vencimentos de renda fixa"),
-    ] = 30,
-    savings_goal_pct: Annotated[
-        float,
-        Query(ge=1, le=100, description="Meta de taxa de poupança em % (padrão: 20%)"),
-    ] = 20.0,
+    invoice_due_days: Annotated[int, Query(ge=1, le=30)] = 3,
+    maturity_days_ahead: Annotated[int, Query(ge=1, le=365)] = 30,
+    savings_goal_pct: Annotated[float, Query(ge=1, le=100)] = 20.0,
+    debt_due_days: Annotated[int, Query(ge=1, le=30)] = 3,
+    recurring_due_days: Annotated[int, Query(ge=1, le=30)] = 7,
+    min_liquidity: Annotated[float, Query(ge=0)] = 0.0,
+    enabled: Annotated[
+        str | None,
+        Query(description="Tipos de alerta ativos separados por vírgula; None = todos"),
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retorna todos os alertas ativos ordenados por prioridade (ALTA → MÉDIA → BAIXA):
-    - DARF de renda variável (vendas de ações > R$20.000 no mês)
-    - Faturas de cartão próximas do vencimento
-    - Títulos de renda fixa com vencimento próximo
-    - Taxa de poupança abaixo da meta configurada
+    Retorna todos os alertas ativos ordenados por prioridade (ALTA → MÉDIA → BAIXA).
+    Cada alerta disparado é automaticamente persistido no histórico (deduplicação diária).
+
+    Tipos suportados: darf, fatura_vencendo, renda_fixa, taxa_poupanca,
+    come_cotas, parcela_divida, recorrente, liquidez_baixa, rebalanceamento, juros_altos.
     """
+    enabled_set = set(enabled.split(",")) if enabled else None
     service = AlertService(db)
     alerts = await service.get_all_alerts(
         invoice_due_days=invoice_due_days,
         maturity_days_ahead=maturity_days_ahead,
         savings_goal_pct=Decimal(str(savings_goal_pct)),
+        debt_due_days=debt_due_days,
+        recurring_due_days=recurring_due_days,
+        min_liquidity=Decimal(str(min_liquidity)),
+        enabled=enabled_set,
     )
+
+    # Persiste os alertas no histórico (deduplicação diária no repositório)
+    if alerts:
+        history_repo = AlertHistoryRepository(db)
+        await history_repo.log_alerts(alerts)
+
     return AlertsOut(
         alerts=[
             AlertOut(
@@ -102,6 +114,35 @@ async def get_alerts(
             for a in alerts
         ],
         count=len(alerts),
+    )
+
+
+@router.get("/alert-history", response_model=AlertHistoryOut)
+async def get_alert_history(
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retorna o histórico dos N alertas mais recentes disparados pelo sistema.
+
+    Ordenado do mais recente para o mais antigo.
+    Útil para auditoria e para o usuário saber o que foi alertado no passado.
+    """
+    repo = AlertHistoryRepository(db)
+    history = await repo.get_recent(limit=limit)
+    return AlertHistoryOut(
+        history=[
+            AlertHistoryItemOut(
+                id=h.id,
+                alert_type=h.alert_type,
+                priority=h.priority.value,
+                title=h.title,
+                message=h.message,
+                triggered_at=h.triggered_at,
+            )
+            for h in history
+        ],
+        count=len(history),
     )
 
 

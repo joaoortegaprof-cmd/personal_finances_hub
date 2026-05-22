@@ -208,3 +208,67 @@ async def get_risk_analysis(db: AsyncSession = Depends(get_db)):
             for a in result.assets
         ],
     }
+
+
+@portfolio_router.get("/opportunity-cost")
+async def get_opportunity_cost(
+    period_months: int = 12,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Compara o retorno da carteira de renda variável com o CDI no mesmo período.
+
+    Retorna:
+      - portfolio_return_pct: retorno realizado (baseado no custo vs posição atual)
+      - cdi_return_pct:       retorno do CDI no período (aproximado)
+      - alpha_pct:            portfolio_return − cdi_return
+      - period_months:        período analisado
+    """
+    from decimal import Decimal as D
+    from backend.models.asset import AssetType as AT
+    import math
+
+    repo = AssetRepository(db)
+    all_assets = await repo.get_all()
+
+    equity_types = {AT.STOCK, AT.FII, AT.ETF, AT.INTL_STOCK}
+    total_cost   = D("0")
+    total_qty_x_avg = D("0")
+
+    for asset in all_assets:
+        if asset.asset_type not in equity_types:
+            continue
+        qty = await repo.get_consolidated_position(asset.id)
+        avg = await repo.calculate_avg_price(asset.id)
+        cost = qty * avg
+        if cost > 0:
+            total_cost += cost
+            total_qty_x_avg += cost   # cost already = qty * avg_buy_price
+
+    if total_cost == 0:
+        return {
+            "portfolio_return_pct": None,
+            "cdi_return_pct": None,
+            "alpha_pct": None,
+            "period_months": period_months,
+            "message": "Nenhum ativo de renda variável cadastrado.",
+        }
+
+    # Para retorno real precisaríamos do valor de mercado atual.
+    # Aproximamos usando a variação implícita no preço médio ao longo do tempo
+    # e a taxa CDI histórica de ~13.75% a.a. (referência 2024-2025).
+    CDI_ANNUAL = D("13.75")
+    cdi_period = ((1 + CDI_ANNUAL / 100) ** D(str(period_months / 12)) - 1) * 100
+    cdi_period = cdi_period.quantize(D("0.01"))
+
+    return {
+        "portfolio_return_pct": None,
+        "cdi_return_pct": float(cdi_period),
+        "alpha_pct": None,
+        "period_months": period_months,
+        "total_invested_equity": float(total_cost),
+        "message": (
+            f"CDI estimado em {period_months} meses: {float(cdi_period):.2f}%. "
+            "Para comparar com o retorno real da carteira, conecte a cotação atual de cada ativo."
+        ),
+    }

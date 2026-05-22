@@ -60,6 +60,7 @@ from PyQt6.QtWidgets import (
 
 from frontend.components.api_client import ApiClient, ApiError
 from frontend.components.signals import app_signals
+from frontend.windows.settings_page import load_settings
 
 
 # ======================================================================
@@ -126,7 +127,16 @@ class DashboardWorker(QThread):
     def run(self) -> None:
         try:
             dashboard = self._client.get_dashboard()
-            alerts    = self._client.get_alerts()
+            cfg = load_settings()
+            alerts = self._client.get_alerts(
+                invoice_due_days   = cfg.get("invoice_alert_days",   3),
+                maturity_days_ahead= cfg.get("maturity_alert_days",  30),
+                savings_goal_pct   = cfg.get("savings_alert_pct",    15.0),
+                debt_due_days      = cfg.get("debt_alert_days",       3),
+                recurring_due_days = cfg.get("recurring_alert_days",  7),
+                min_liquidity      = cfg.get("min_liquidity",         0.0),
+                enabled            = cfg.get("enabled_alerts",        None),
+            )
 
             try:
                 emergency_fund = self._client.get_emergency_fund()
@@ -877,6 +887,93 @@ class CategoryDonutWidget(QFrame):
 
 
 # ======================================================================
+# Worker + Widget — Histórico de Alertas
+# ======================================================================
+
+
+class AlertHistoryWorker(QThread):
+    """Busca o histórico de alertas em background (GET /dashboard/alert-history)."""
+
+    data_ready     = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, limit: int = 30) -> None:
+        super().__init__()
+        self._client = client
+        self._limit  = limit
+
+    def run(self) -> None:
+        try:
+            data = self._client.get_alert_history(limit=self._limit)
+            self.data_ready.emit(data)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class AlertHistoryRow(QFrame):
+    """
+    Linha do histórico de alertas — semelhante ao AlertRow mas com timestamp
+    e estilo mais compacto para acomodar muitas entradas.
+    """
+
+    _PRIORITY_COLOR: dict[str, str] = {
+        "alta":  "#FF6B6B",
+        "media": "#FFB347",
+        "baixa": "#4A9EFF",
+    }
+
+    def __init__(self, entry: dict) -> None:
+        super().__init__()
+        self.setObjectName("alertItem")
+
+        priority  = str(entry.get("priority", "baixa")).lower()
+        dot_color = self._PRIORITY_COLOR.get(priority, "#4A9EFF")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+
+        dot = QLabel("●")
+        dot.setFixedWidth(12)
+        dot.setStyleSheet(f"color: {dot_color}; font-size: 10px;")
+        dot.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+
+        title_label = QLabel(entry.get("title", ""))
+        title_label.setStyleSheet("color: #E8EAED; font-size: 12px; font-weight: 600;")
+
+        msg_label = QLabel(entry.get("message", ""))
+        msg_label.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        msg_label.setWordWrap(True)
+
+        text_col.addWidget(title_label)
+        text_col.addWidget(msg_label)
+
+        layout.addWidget(dot, alignment=Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(text_col, stretch=1)
+
+        # Timestamp (lado direito) — formato dd/mm HH:MM
+        ts_raw = entry.get("triggered_at", "")
+        ts_display = ""
+        if ts_raw:
+            try:
+                from datetime import datetime as _dt
+                ts = _dt.fromisoformat(ts_raw.replace("Z", ""))
+                ts_display = ts.strftime("%d/%m %H:%M")
+            except Exception:
+                ts_display = ts_raw[:16]
+
+        ts_label = QLabel(ts_display)
+        ts_label.setStyleSheet("color: #8B90A7; font-size: 10px;")
+        ts_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(ts_label, alignment=Qt.AlignmentFlag.AlignTop)
+
+
+# ======================================================================
 # Página principal do Dashboard
 # ======================================================================
 
@@ -888,9 +985,10 @@ class DashboardPage(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self._client     = ApiClient()
-        self._worker:     DashboardWorker        | None = None
-        self._pat_worker: PatrimonyHistoryWorker | None = None
+        self._client      = ApiClient()
+        self._worker:      DashboardWorker       | None = None
+        self._pat_worker:  PatrimonyHistoryWorker | None = None
+        self._hist_worker: AlertHistoryWorker     | None = None
 
         self._build_ui()
         app_signals.data_changed.connect(self.load_data)
@@ -986,6 +1084,33 @@ class DashboardPage(QWidget):
         self._alerts_area.setSpacing(8)
         self._content_layout.addLayout(self._alerts_area)
 
+        # ── Histórico de Alertas ───────────────────────────────────────
+        self._hist_header = QHBoxLayout()
+        self._hist_title = QLabel("Histórico de Alertas")
+        self._hist_title.setObjectName("sectionTitle")
+        self._hist_title.setVisible(False)
+        self._hist_toggle_btn = QPushButton("▼ Mostrar")
+        self._hist_toggle_btn.setFixedWidth(100)
+        self._hist_toggle_btn.setCheckable(True)
+        self._hist_toggle_btn.setChecked(False)
+        self._hist_toggle_btn.setVisible(False)
+        self._hist_toggle_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #8B90A7; border: none; font-size: 11px; }"
+            "QPushButton:hover { color: #C5CAE9; }"
+        )
+        self._hist_toggle_btn.clicked.connect(self._toggle_history)
+        self._hist_header.addWidget(self._hist_title)
+        self._hist_header.addStretch()
+        self._hist_header.addWidget(self._hist_toggle_btn)
+        self._content_layout.addLayout(self._hist_header)
+
+        self._hist_area = QVBoxLayout()
+        self._hist_area.setSpacing(6)
+        self._hist_container = QWidget()
+        self._hist_container.setLayout(self._hist_area)
+        self._hist_container.setVisible(False)
+        self._content_layout.addWidget(self._hist_container)
+
         self._content_layout.addStretch()
         scroll.setWidget(content)
         outer.addWidget(scroll)
@@ -1064,6 +1189,12 @@ class DashboardPage(QWidget):
         self._pat_worker.patrimony_ready.connect(self._on_patrimony_ready)
         self._pat_worker.error_occurred.connect(self._on_patrimony_error)
         self._pat_worker.start()
+
+        # Histórico de alertas — carrega em paralelo sem bloquear o dashboard
+        if not (self._hist_worker and self._hist_worker.isRunning()):
+            self._hist_worker = AlertHistoryWorker(self._client, limit=30)
+            self._hist_worker.data_ready.connect(self._on_history_ready)
+            self._hist_worker.start()
 
     # ------------------------------------------------------------------
     # Slots — DashboardWorker
@@ -1213,6 +1344,8 @@ class DashboardPage(QWidget):
         self._charts_widget.setVisible(visible)
         self._alerts_title.setVisible(visible)
         self._debts_title.setVisible(visible)
+        self._hist_title.setVisible(visible)
+        self._hist_toggle_btn.setVisible(visible)
 
     def _populate_debts(self, debts: list[dict]) -> None:
         # Limpa rows anteriores
@@ -1244,6 +1377,32 @@ class DashboardPage(QWidget):
 
         for alert_data in alerts:
             self._alerts_area.addWidget(AlertRow(alert_data))
+
+    def _on_history_ready(self, data: dict) -> None:
+        """Chamado quando AlertHistoryWorker termina. Popula a seção de histórico."""
+        self._populate_alert_history(data.get("history", []))
+
+    def _populate_alert_history(self, history: list[dict]) -> None:
+        """Preenche a área de histórico de alertas."""
+        while self._hist_area.count():
+            item = self._hist_area.takeAt(0)
+            if w := item.widget():
+                w.deleteLater()
+
+        if not history:
+            empty = QLabel("Nenhum alerta registrado no histórico.")
+            empty.setStyleSheet("color: #8B90A7; font-size: 12px; padding: 8px 0;")
+            self._hist_area.addWidget(empty)
+            return
+
+        # Exibe os 30 mais recentes (já vêm ordenados do mais novo para o mais antigo)
+        for entry in history:
+            self._hist_area.addWidget(AlertHistoryRow(entry))
+
+    def _toggle_history(self, checked: bool) -> None:
+        """Mostra/oculta o container do histórico de alertas."""
+        self._hist_container.setVisible(checked)
+        self._hist_toggle_btn.setText("▲ Ocultar" if checked else "▼ Mostrar")
 
     def _populate_legend(self, top5: list[dict], total: float) -> None:
         while self._legend_layout.count():

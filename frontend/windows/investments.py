@@ -401,6 +401,19 @@ class NewAssetDialog(QDialog):
         self._sector.setPlaceholderText("Ex: Energia, Financeiro, Imóveis (opcional)")
         form.addRow("Setor", self._sector)
 
+        # Alocação-alvo: % da carteira que este ativo deve representar.
+        # Quando o desvio real superar 5 p.p., o alerta de rebalanceamento é disparado.
+        self._target_alloc = QDoubleSpinBox()
+        self._target_alloc.setRange(0.0, 100.0)
+        self._target_alloc.setDecimals(1)
+        self._target_alloc.setSuffix(" %")
+        self._target_alloc.setSpecialValueText("Sem meta")   # 0.0 → sem meta
+        self._target_alloc.setToolTip(
+            "Percentual-alvo na carteira. "
+            "Alerta de rebalanceamento dispara quando o desvio superar 5 p.p."
+        )
+        form.addRow("Alocação-alvo", self._target_alloc)
+
         self._notes = QPlainTextEdit()
         self._notes.setPlaceholderText("Observações opcionais…")
         self._notes.setMaximumHeight(72)
@@ -508,6 +521,9 @@ class NewAssetDialog(QDialog):
         notes = self._notes.toPlainText().strip()
         if notes:
             payload["notes"] = notes
+        # 0.0 = "Sem meta" (specialValueText) → envia null para a API
+        target = self._target_alloc.value()
+        payload["target_allocation_pct"] = target if target > 0 else None
 
         return payload
 
@@ -853,6 +869,8 @@ class EditAssetDialog(NewAssetDialog):
         self._sector.setText(asset.get("sector") or "")
         self._notes.setPlainText(asset.get("notes") or "")
         self._emergency_fund_cb.setChecked(bool(asset.get("is_emergency_fund", False)))
+        target = asset.get("target_allocation_pct")
+        self._target_alloc.setValue(float(target) if target else 0.0)
 
 
 # ======================================================================
@@ -1423,6 +1441,7 @@ class InvestmentsPage(QWidget):
         Seção de breakdown de liquidez D+0, D+1, D+2, vencimento.
 
         Cada janela tem um sub-card com o valor total e percentual do portfólio.
+        Abaixo dos cards, um gráfico de barras mostra a liquidez ACUMULADA por prazo.
         """
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -1447,6 +1466,16 @@ class InvestmentsPage(QWidget):
             cards_row.addWidget(card)
 
         layout.addLayout(cards_row)
+
+        # Gráfico de liquidez acumulada por prazo
+        chart_label = QLabel("Quanto posso resgatar sem perda até cada prazo?")
+        chart_label.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        layout.addWidget(chart_label)
+
+        self._liquidity_chart = LiquidityCumulativeCanvas()
+        self._liquidity_chart.setFixedHeight(180)
+        layout.addWidget(self._liquidity_chart)
+
         return container
 
     # ------------------------------------------------------------------
@@ -1583,6 +1612,9 @@ class InvestmentsPage(QWidget):
         self._liq_d1.set_value(_fmt_brl(d1), sub=_pct(d1))
         self._liq_d2.set_value(_fmt_brl(d2), sub=_pct(d2))
         self._liq_mat.set_value(_fmt_brl(mat), sub=_pct(mat))
+
+        # Atualiza o gráfico acumulado com os mesmos valores
+        self._liquidity_chart.update_data(d0, d1, d2, mat)
 
     # ------------------------------------------------------------------
     # Diálogos
@@ -1928,6 +1960,85 @@ class _SummaryCard(QFrame):
         self._value.setStyleSheet(f"color: {color or self._default_color};")
         self._sub.setText(sub)
         self._sub.setVisible(bool(sub))
+
+
+class LiquidityCumulativeCanvas(FigureCanvasQTAgg):
+    """
+    Gráfico de barras horizontais empilhadas mostrando a liquidez ACUMULADA.
+
+    Cada barra representa quanto do portfólio fica disponível em cada prazo:
+      D+0           → disponível hoje (contas + ativos imediatos)
+      D+0 + D+1     → disponível até amanhã
+      D+0 + D+1 + D+2 → disponível em até 2 dias úteis
+      Total         → valor total (inclui ativos travados até vencimento)
+
+    A visualização acumulada responde: "se eu precisar de R$X em D+1, tenho?"
+    """
+
+    _COLORS = ["#00C896", "#4A9EFF", "#FFB347", "#8B90A7"]
+    _LABELS = ["D+0\n(hoje)", "D+1\n(amanhã)", "D+2\n(B3)", "Vencimento"]
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        fig = Figure(figsize=(6, 2.2), facecolor="#1E2138")
+        super().__init__(fig)
+        self.setParent(parent)
+        self._ax = fig.add_subplot(111)
+        self._fig = fig
+        self._draw_empty()
+
+    def _draw_empty(self) -> None:
+        ax = self._ax
+        ax.clear()
+        ax.set_facecolor("#1E2138")
+        ax.text(
+            0.5, 0.5, "Sem dados de liquidez",
+            ha="center", va="center", color="#8B90A7",
+            fontsize=10, transform=ax.transAxes,
+        )
+        ax.axis("off")
+        self._fig.tight_layout()
+        self.draw()
+
+    def update_data(self, d0: float, d1: float, d2: float, maturity: float) -> None:
+        """Redesenha o gráfico com os valores de cada janela."""
+        ax = self._ax
+        ax.clear()
+        ax.set_facecolor("#1E2138")
+
+        # Valores acumulados: quanto está disponível até cada prazo
+        cumulative = [d0, d0 + d1, d0 + d1 + d2, d0 + d1 + d2 + maturity]
+        total = cumulative[-1] or 1  # evitar divisão por zero
+
+        y_pos = [3, 2, 1, 0]  # de cima para baixo: D+0, D+1, D+2, Total
+
+        for i, (val, color, label) in enumerate(zip(cumulative, self._COLORS, self._LABELS)):
+            pct = val / total * 100
+            ax.barh(
+                y_pos[i], val,
+                color=color, alpha=0.85,
+                height=0.55,
+            )
+            # Valor em BRL dentro ou à direita da barra
+            formatted = f"R$ {val:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            ax.text(
+                val + total * 0.01, y_pos[i],
+                f"{formatted}  ({pct:.1f}%)",
+                va="center", color="#E8EAED", fontsize=8.5,
+            )
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(self._LABELS, color="#8B90A7", fontsize=8.5)
+        ax.set_xlabel("Valor acumulado disponível (R$)", color="#8B90A7", fontsize=8)
+        ax.tick_params(axis="x", colors="#8B90A7", labelsize=7.5)
+        ax.tick_params(axis="y", left=False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.xaxis.label.set_color("#8B90A7")
+        ax.set_title("Liquidez acumulada por prazo", color="#C5CAE9", fontsize=9, pad=6)
+        ax.set_xlim(0, total * 1.35)
+
+        self._fig.tight_layout(pad=1.0)
+        self.draw()
 
 
 class _LiquidityCard(QFrame):

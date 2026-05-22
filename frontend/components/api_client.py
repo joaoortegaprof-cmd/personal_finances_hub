@@ -92,23 +92,23 @@ class ApiClient:
         invoice_due_days: int = 3,
         maturity_days_ahead: int = 30,
         savings_goal_pct: float = 20.0,
+        debt_due_days: int = 3,
+        recurring_due_days: int = 7,
+        min_liquidity: float = 0.0,
+        enabled: str | None = None,
     ) -> dict:
-        """
-        Retorna alertas ativos ordenados por prioridade (ALTA → MÉDIA → BAIXA).
-
-        Parâmetros configuram sensibilidade de cada tipo de alerta:
-          - invoice_due_days: dias de antecedência para alertas de fatura
-          - maturity_days_ahead: horizonte de vencimentos de renda fixa
-          - savings_goal_pct: meta de taxa de poupança mensal em %
-        """
-        return self._get(
-            "/dashboard/alerts",
-            params={
-                "invoice_due_days": invoice_due_days,
-                "maturity_days_ahead": maturity_days_ahead,
-                "savings_goal_pct": savings_goal_pct,
-            },
-        )
+        """Retorna alertas ativos ordenados por prioridade."""
+        params: dict = {
+            "invoice_due_days":   invoice_due_days,
+            "maturity_days_ahead": maturity_days_ahead,
+            "savings_goal_pct":   savings_goal_pct,
+            "debt_due_days":      debt_due_days,
+            "recurring_due_days": recurring_due_days,
+            "min_liquidity":      min_liquidity,
+        }
+        if enabled is not None:
+            params["enabled"] = enabled
+        return self._get("/dashboard/alerts", params=params)
 
     # ------------------------------------------------------------------
     # Contas
@@ -502,6 +502,47 @@ class ApiClient:
     def get_fire_number(self, withdrawal_rate: float = 0.04) -> dict:
         """Calcula o número FIRE com dados reais do banco."""
         return self._get("/simulation/fire", params={"withdrawal_rate": withdrawal_rate})
+
+    # ------------------------------------------------------------------
+    # Histórico de alertas
+    # ------------------------------------------------------------------
+
+    def get_alert_history(self, limit: int = 50) -> dict:
+        """
+        Retorna o histórico dos alertas mais recentes disparados pelo sistema.
+
+        Retorna: {"history": [...], "count": N}
+        Cada item: {id, alert_type, priority, title, message, triggered_at}
+        """
+        return self._get("/dashboard/alert-history", params={"limit": limit})
+
+    # ------------------------------------------------------------------
+    # Análise de gastos
+    # ------------------------------------------------------------------
+
+    def get_expense_patterns(self, reference_date: str | None = None) -> list[dict]:
+        """
+        Retorna o padrão de gastos do mês atual vs média dos 3 meses anteriores.
+
+        Cada item contém: category, current_month, avg_3m, change_pct,
+        trend (crescente/estável/decrescente) e is_anomaly (variação > 50%).
+        """
+        params = {"reference_date": reference_date} if reference_date else None
+        return self._get("/transactions/expense-patterns", params=params)
+
+    # ------------------------------------------------------------------
+    # Custo de oportunidade
+    # ------------------------------------------------------------------
+
+    def get_opportunity_cost(self, annual_rate: float = 0.1275) -> dict:
+        """
+        Compara o retorno real da carteira (custo médio) com um benchmark
+        de renda fixa (padrão: CDI ≈ 12,75 % a.a.).
+
+        Retorna: total_invested, benchmark_rate_annual, benchmark_value,
+        portfolio_cost, opportunity_cost (positivo = carteira ficou atrás).
+        """
+        return self._get("/portfolio/opportunity-cost", params={"annual_rate": annual_rate})
 
     # ------------------------------------------------------------------
     # Sistema

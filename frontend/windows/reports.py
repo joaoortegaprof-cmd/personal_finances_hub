@@ -90,6 +90,16 @@ class ReportWorker(QThread):
                 data["assets"] = self._client.get_assets()
                 data["portfolio"] = self._client.get_portfolio_summary()
 
+            if self._report_type == "padrão_gastos":
+                # Usa o último dia do período como referência para o mês
+                data["patterns"] = self._client.get_expense_patterns(
+                    reference_date=self._end.isoformat()
+                )
+
+            if self._report_type == "custo_oportunidade":
+                data["opportunity"] = self._client.get_opportunity_cost()
+                data["assets"] = self._client.get_assets()
+
             self.data_ready.emit(data)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
@@ -102,9 +112,11 @@ class ReportWorker(QThread):
 # ======================================================================
 
 _REPORT_TYPES = [
-    ("lancamentos",   "Lançamentos do período"),
-    ("resumo",        "Resumo mensal"),
-    ("investimentos", "Carteira de investimentos"),
+    ("lancamentos",       "Lançamentos do período"),
+    ("resumo",            "Resumo mensal"),
+    ("investimentos",     "Carteira de investimentos"),
+    ("padrão_gastos",     "Padrão de gastos"),
+    ("custo_oportunidade","Custo de oportunidade"),
 ]
 
 
@@ -335,9 +347,15 @@ class ReportsPage(QWidget):
         elif report_type == "resumo":
             body = self._build_summary_body(data)
             title = "Resumo Financeiro do Período"
-        else:
+        elif report_type == "investimentos":
             body = self._build_investments_body(data)
             title = "Carteira de Investimentos"
+        elif report_type == "padrão_gastos":
+            body = self._build_expense_pattern_body(data)
+            title = "Padrão de Gastos — Anomalias e Tendências"
+        else:
+            body = self._build_opportunity_cost_body(data)
+            title = "Custo de Oportunidade"
 
         return f"""<!DOCTYPE html>
 <html>
@@ -481,6 +499,142 @@ class ReportsPage(QWidget):
         <table>
           <thead><tr><th>Ticker</th><th>Nome</th><th>Tipo</th></tr></thead>
           <tbody>{rows}</tbody>
+        </table>"""
+
+    def _build_expense_pattern_body(self, data: dict) -> str:
+        """
+        Exibe padrão de gastos por categoria: mês atual vs média 3 meses.
+
+        Anomalias (variação > 50%) aparecem em vermelho com ícone ⚠.
+        Tendências usam setas: ↑ crescente, → estável, ↓ decrescente.
+        """
+        patterns: list[dict] = data.get("patterns", [])
+
+        if not patterns:
+            return "<p>Sem dados de gastos para o período. Registre lançamentos primeiro.</p>"
+
+        def fmt(v: float) -> str:
+            return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        _TREND_ARROW = {"crescente": "↑", "estável": "→", "decrescente": "↓"}
+        _TREND_COLOR = {"crescente": "#b71c1c", "estável": "#555", "decrescente": "#0a7a4a"}
+
+        rows = ""
+        anomaly_count = 0
+        for p in sorted(patterns, key=lambda x: -abs(x.get("change_pct", 0))):
+            cat         = p.get("category", "outros")
+            current     = float(p.get("current_month", 0))
+            avg3m       = float(p.get("avg_3m", 0))
+            change_pct  = float(p.get("change_pct", 0))
+            trend       = p.get("trend", "estável")
+            is_anomaly  = bool(p.get("is_anomaly", False))
+
+            arrow  = _TREND_ARROW.get(trend, "→")
+            color  = _TREND_COLOR.get(trend, "#555")
+            sign   = "+" if change_pct > 0 else ""
+            flag   = " ⚠" if is_anomaly else ""
+            row_bg = ' style="background:#fff5f5;"' if is_anomaly else ""
+
+            if is_anomaly:
+                anomaly_count += 1
+
+            rows += f"""<tr{row_bg}>
+              <td>{cat}{flag}</td>
+              <td class="amount">{fmt(current)}</td>
+              <td class="amount">{fmt(avg3m)}</td>
+              <td class="amount" style="color:{color};">{sign}{change_pct:.1f}%</td>
+              <td style="color:{color}; text-align:center;">{arrow} {trend}</td>
+            </tr>"""
+
+        summary_html = ""
+        if anomaly_count:
+            summary_html = f"""<div class="summary-box" style="border-color:#ffcdd2; background:#fff5f5;">
+              <div class="summary-item">
+                <div class="summary-label">⚠ Anomalias detectadas</div>
+                <div class="summary-value" style="color:#b71c1c;">{anomaly_count}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Critério</div>
+                <div class="summary-value" style="font-size:14px; color:#555;">variação &gt; 50% vs média 3m</div>
+              </div>
+            </div>"""
+
+        return f"""
+        {summary_html}
+        <h2>Gastos por categoria — mês atual vs últimos 3 meses</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Categoria</th>
+              <th>Mês atual</th>
+              <th>Média 3 meses</th>
+              <th>Variação</th>
+              <th>Tendência</th>
+            </tr>
+          </thead>
+          <tbody>{rows}</tbody>
+        </table>
+        <p style="font-size:11px; color:#888; margin-top:12px;">
+          ⚠ Anomalia = gasto do mês atual mais de 50% acima da média dos 3 meses anteriores.<br>
+          Tendência calculada pela inclinação linear dos últimos 3 meses.
+        </p>"""
+
+    def _build_opportunity_cost_body(self, data: dict) -> str:
+        """
+        Compara o custo investido na carteira com o que teria rendido em renda fixa (CDI).
+
+        Mostra: total investido, valor hipotético no CDI, custo de oportunidade.
+        """
+        opp: dict = data.get("opportunity", {})
+        assets: list[dict] = data.get("assets", [])
+
+        if not opp:
+            return "<p>Não foi possível calcular o custo de oportunidade. Verifique a conexão com a API.</p>"
+
+        def fmt(v: float) -> str:
+            return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        total_invested  = float(opp.get("total_invested", 0))
+        benchmark_value = float(opp.get("benchmark_value", 0))
+        portfolio_cost  = float(opp.get("portfolio_cost", total_invested))
+        opp_cost        = float(opp.get("opportunity_cost", 0))
+        rate_annual     = float(opp.get("benchmark_rate_annual", 0.1275)) * 100
+
+        # Cor: positivo = carteira ficou atrás do CDI (vermelho)
+        opp_color = "#b71c1c" if opp_cost > 0 else "#0a7a4a"
+        opp_sign  = "+" if opp_cost > 0 else ""
+
+        assets_rows = "".join(
+            f"<tr><td>{a.get('ticker','—')}</td><td>{a.get('name','')}</td>"
+            f"<td>{a.get('asset_type','')}</td></tr>"
+            for a in assets
+        )
+
+        return f"""
+        <div class="summary-box">
+          <div class="summary-item">
+            <div class="summary-label">Total investido (custo)</div>
+            <div class="summary-value">{fmt(total_invested)}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Benchmark (CDI {rate_annual:.2f}% a.a.)</div>
+            <div class="summary-value">{fmt(benchmark_value)}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Custo de oportunidade</div>
+            <div class="summary-value" style="color:{opp_color};">{opp_sign}{fmt(opp_cost)}</div>
+          </div>
+        </div>
+        <p style="font-size:12px; color:#555; margin-top:16px;">
+          O <strong>custo de oportunidade</strong> mostra quanto a mais você teria hoje
+          se tivesse alocado o capital em CDI em vez da carteira atual.
+          Valor positivo significa que o CDI teria rendido mais; negativo significa
+          que sua carteira superou o benchmark.
+        </p>
+        <h2>Ativos na carteira</h2>
+        <table>
+          <thead><tr><th>Ticker</th><th>Nome</th><th>Tipo</th></tr></thead>
+          <tbody>{assets_rows}</tbody>
         </table>"""
 
     # ------------------------------------------------------------------

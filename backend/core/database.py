@@ -160,3 +160,38 @@ async def init_db() -> None:
         # Migração: tabela recurring_expenses (criada via create_all acima,
         # mas garantida aqui caso o banco seja pré-existente sem a tabela)
         from backend.models.recurring import RecurringExpense  # noqa: F401
+
+        # Migração: coluna target_allocation_pct na tabela assets
+        result = await conn.execute(
+            text(
+                "SELECT COUNT(*) FROM pragma_table_info('assets') "
+                "WHERE name='target_allocation_pct'"
+            )
+        )
+        if result.scalar() == 0:
+            await conn.execute(
+                text("ALTER TABLE assets ADD COLUMN target_allocation_pct NUMERIC(5,2)")
+            )
+
+        # Migração: tabela alert_history (histórico de alertas disparados)
+        result = await conn.execute(
+            text(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type='table' AND name='alert_history'"
+            )
+        )
+        if result.scalar() == 0:
+            await conn.execute(text("""
+                CREATE TABLE alert_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alert_type VARCHAR(50) NOT NULL,
+                    priority VARCHAR(10) NOT NULL,
+                    title VARCHAR(200) NOT NULL,
+                    message TEXT NOT NULL,
+                    triggered_at DATETIME NOT NULL DEFAULT (datetime('now'))
+                )
+            """))
+            await conn.execute(text(
+                "CREATE INDEX ix_alert_history_triggered_at "
+                "ON alert_history (triggered_at DESC)"
+            ))

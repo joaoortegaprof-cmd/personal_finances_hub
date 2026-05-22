@@ -2,9 +2,10 @@
 Schemas Pydantic para o dashboard principal e alertas.
 """
 
+from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from backend.services.alert_service import AlertPriority, AlertType
 
@@ -49,4 +50,21 @@ class AlertOut(BaseModel):
 
 class AlertsOut(BaseModel):
     alerts: list[AlertOut]
+    count: int
+
+
+class AlertHistoryItemOut(BaseModel):
+    """Registro histórico de um alerta que já foi disparado."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    alert_type: str
+    priority: str
+    title: str
+    message: str
+    triggered_at: datetime
+
+
+class AlertHistoryOut(BaseModel):
+    history: list[AlertHistoryItemOut]
     count: int

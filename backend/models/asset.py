@@ -206,6 +206,13 @@ class Asset(Base):
         Boolean, nullable=False, default=False, server_default="0"
     )
 
+    # Alocação-alvo definida pelo usuário (% do total da carteira).
+    # Usado pelo AlertService.check_rebalancing() para detectar desvios ≥ 5 p.p.
+    # Nulo = usuário não definiu meta para este ativo.
+    target_allocation_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
+
     # -----------------------------------------------------------------
     # Auditoria
     # -----------------------------------------------------------------

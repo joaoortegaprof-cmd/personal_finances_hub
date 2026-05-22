@@ -22,6 +22,9 @@ class AssetCreate(BaseModel):
     liquidity: LiquidityWindow = LiquidityWindow.D2
     notes: str | None = None
     is_emergency_fund: bool = False
+    # Alocação-alvo em % da carteira (0–100). Usado pelo alerta de rebalanceamento.
+    # None = ativo sem meta de alocação (alerta desabilitado para este ativo).
+    target_allocation_pct: Decimal | None = Field(default=None, ge=0, le=100)
 
 
 class AssetUpdate(BaseModel):
@@ -36,6 +39,7 @@ class AssetUpdate(BaseModel):
     liquidity: LiquidityWindow | None = None
     notes: str | None = None
     is_emergency_fund: bool | None = None
+    target_allocation_pct: Decimal | None = Field(default=None, ge=0, le=100)
 
 
 class AssetOut(BaseModel):
@@ -53,6 +57,7 @@ class AssetOut(BaseModel):
     liquidity: LiquidityWindow
     notes: str | None
     is_emergency_fund: bool
+    target_allocation_pct: Decimal | None
     created_at: datetime
     updated_at: datetime
 
