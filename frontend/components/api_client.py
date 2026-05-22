@@ -177,6 +177,14 @@ class ApiClient:
         """
         return self._get("/portfolio/liquidity")
 
+    def get_portfolio_risk(self) -> dict:
+        """
+        Retorna a análise de risco da carteira: Beta, Volatilidade,
+        VaR 95% por ativo e métricas consolidadas, além da diversificação
+        por classe de ativo.
+        """
+        return self._get("/portfolio/risk-analysis")
+
     def get_assets(self) -> list[dict]:
         """Lista todos os ativos cadastrados."""
         return self._get("/assets")

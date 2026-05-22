@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QFrame,
@@ -43,9 +43,26 @@ from frontend.windows.settings_page import SettingsPage
 from frontend.windows.simulation import SimulationPage
 from frontend.windows.tax import TaxPage
 from frontend.windows.transactions import TransactionsPage
+from frontend.services.notification_service import NotificationService
+from frontend.components.api_client import ApiClient
 
 # Caminho do tema QSS relativo a este arquivo
 _THEME_PATH = Path(__file__).parent.parent / "styles" / "theme.qss"
+
+# Intervalo entre verificações de alertas (30 minutos em ms)
+_NOTIFICATION_INTERVAL_MS = 30 * 60 * 1000
+
+
+class _NotificationWorker(QThread):
+    """Executa NotificationService.check_and_notify() fora da thread principal."""
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self._service = NotificationService(client)
+
+    def run(self) -> None:
+        self._service.check_and_notify()
+
 
 # Itens da sidebar: (label exibido, índice no QStackedWidget)
 _NAV_ITEMS: list[tuple[str, int]] = [
@@ -76,13 +93,20 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("FinanceHub")
-        # Tamanho mínimo garantido mesmo em monitores menores
         self.setMinimumSize(1200, 750)
-        # Começa maximizado para aproveitar a tela completa
         self.showMaximized()
 
         self._apply_theme()
         self._build_ui()
+
+        # Notificações: dispara 5 s após abertura e depois a cada 30 min
+        self._notif_client  = ApiClient()
+        self._notif_worker: _NotificationWorker | None = None
+        QTimer.singleShot(5_000, self._run_notifications)
+        self._notif_timer = QTimer(self)
+        self._notif_timer.setInterval(_NOTIFICATION_INTERVAL_MS)
+        self._notif_timer.timeout.connect(self._run_notifications)
+        self._notif_timer.start()
 
     # ------------------------------------------------------------------
     # Tema
@@ -265,6 +289,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Navegação
     # ------------------------------------------------------------------
+
+    def _run_notifications(self) -> None:
+        if self._notif_worker and self._notif_worker.isRunning():
+            return
+        self._notif_worker = _NotificationWorker(self._notif_client)
+        self._notif_worker.start()
 
     def _refresh_current_page(self) -> None:
         page = self.stack.currentWidget()

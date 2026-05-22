@@ -1113,6 +1113,84 @@ _COL_COST = 5
 _COL_ACTIONS = 6
 
 
+class RiskWorker(QThread):
+    """Busca GET /portfolio/risk-analysis em background."""
+    data_ready     = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            self.data_ready.emit(self._client.get_portfolio_risk())
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+class DiversificationCanvas(FigureCanvasQTAgg):
+    """Gráfico de barras horizontais com diversificação por classe de ativo."""
+
+    _BG   = "#1A1D2E"
+    _GRID = "#2A2D3E"
+    _COLORS = ["#4A9EFF", "#00C896", "#FFB347", "#FF6B6B",
+               "#9B6DFF", "#FF9ECD", "#50D8D7", "#A0A0A0"]
+
+    _TYPE_LABELS = {
+        "acao":                 "Ações",
+        "fii":                  "FIIs",
+        "etf":                  "ETFs",
+        "tesouro_direto":       "Tesouro Direto",
+        "renda_fixa":           "Renda Fixa",
+        "criptomoeda":          "Cripto",
+        "acao_internacional":   "Int'l",
+        "previdencia":          "Previdência",
+        "outros":               "Outros",
+    }
+
+    def __init__(self) -> None:
+        self._fig = Figure(figsize=(6, 2.6), facecolor=self._BG)
+        super().__init__(self._fig)
+        self.setMinimumHeight(180)
+        self._ax = self._fig.add_subplot(111)
+        self._ax.set_facecolor(self._BG)
+        self._fig.tight_layout(pad=1.0)
+
+    def plot(self, diversification: list[dict]) -> None:
+        self._ax.cla()
+        self._ax.set_facecolor(self._BG)
+
+        if not diversification:
+            self._fig.canvas.draw_idle()
+            return
+
+        labels = [self._TYPE_LABELS.get(d["type"], d["type"]) for d in diversification]
+        values = [d["pct"] for d in diversification]
+        colors = [self._COLORS[i % len(self._COLORS)] for i in range(len(labels))]
+
+        y = range(len(labels))
+        self._ax.barh(list(y), values, color=colors, height=0.6)
+
+        for i, (v, lbl) in enumerate(zip(values, labels)):
+            self._ax.text(v + 0.5, i, f"{v:.1f}%", va="center",
+                          color="#C8CAD8", fontsize=8)
+            self._ax.text(-0.5, i, lbl, va="center", ha="right",
+                          color="#8B90A7", fontsize=8)
+
+        self._ax.set_yticks([])
+        self._ax.set_xlabel("% da carteira", color="#8B90A7", fontsize=8)
+        self._ax.tick_params(colors="#8B90A7", labelsize=8)
+        for spine in self._ax.spines.values():
+            spine.set_color(self._GRID)
+        self._ax.set_xlim(-12, max(values) * 1.15 if values else 100)
+
+        self._fig.tight_layout(pad=1.0)
+        self._fig.canvas.draw_idle()
+
+
 class InvestmentsPage(QWidget):
     """
     Página completa de investimentos: resumo, tabela de posições e liquidez.
@@ -1131,6 +1209,8 @@ class InvestmentsPage(QWidget):
         self._update_worker: UpdateAssetWorker | None = None
         self._dividend_worker: DividendWorker | None = None
         self._save_dividend_worker: SaveDividendWorker | None = None
+        self._risk_worker: RiskWorker | None = None
+        self._risk_loaded: bool = False
 
         self._raw_assets: list[dict] = []
         self._assets: list[dict] = []
@@ -1172,6 +1252,10 @@ class InvestmentsPage(QWidget):
         # Aba 2: Proventos Recebidos
         dividends_tab = self._build_dividends_tab()
         self._tab_widget.addTab(dividends_tab, "Proventos Recebidos")
+
+        # Aba 3: Análise de Risco
+        risk_tab = self._build_risk_tab()
+        self._tab_widget.addTab(risk_tab, "Análise de Risco")
 
         main.addWidget(self._tab_widget)
         main.addStretch()
@@ -1588,6 +1672,8 @@ class InvestmentsPage(QWidget):
     def _on_tab_changed(self, index: int) -> None:
         if index == 1:
             self._load_dividends()
+        elif index == 2 and not self._risk_loaded:
+            self._load_risk()
 
     def _load_dividends(self) -> None:
         if self._dividend_worker and self._dividend_worker.isRunning():
@@ -1669,10 +1755,144 @@ class InvestmentsPage(QWidget):
         )
         self._save_dividend_worker.start()
 
+    # ------------------------------------------------------------------
+    # Aba Análise de Risco
+    # ------------------------------------------------------------------
+
+    def _build_risk_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(0, 12, 0, 0)
+        lay.setSpacing(14)
+
+        # Cards de métricas da carteira
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(12)
+        self._risk_beta_card  = _RiskMetricCard("Beta da Carteira", "—",
+            "Sensibilidade vs IBOVESPA (1 = mesmo risco do índice)")
+        self._risk_vol_card   = _RiskMetricCard("Volatilidade (a.a.)", "—",
+            "Desvio padrão anualizado dos retornos diários")
+        self._risk_var_card   = _RiskMetricCard("VaR 95% (diário)", "—",
+            "Perda máxima esperada em 1 dia com 95% de confiança")
+        for c in (self._risk_beta_card, self._risk_vol_card, self._risk_var_card):
+            cards_row.addWidget(c)
+        lay.addLayout(cards_row)
+
+        # Gráfico de diversificação
+        div_lbl = QLabel("Diversificação por Classe de Ativo")
+        div_lbl.setStyleSheet("color: #8B90A7; font-size: 11px; font-weight: 600;")
+        lay.addWidget(div_lbl)
+        self._div_canvas = DiversificationCanvas()
+        lay.addWidget(self._div_canvas)
+
+        # Tabela por ativo
+        risk_lbl = QLabel("Risco por Ativo")
+        risk_lbl.setStyleSheet("color: #8B90A7; font-size: 11px; font-weight: 600;")
+        lay.addWidget(risk_lbl)
+        self._risk_table = self._build_risk_table()
+        lay.addWidget(self._risk_table)
+
+        self._risk_loading = QLabel("Calculando métricas de risco…")
+        self._risk_loading.setObjectName("loadingLabel")
+        self._risk_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._risk_loading.setVisible(False)
+        lay.addWidget(self._risk_loading)
+
+        return tab
+
+    def _build_risk_table(self) -> QTableWidget:
+        headers = ["Ticker", "Nome", "Classe", "Peso %", "Beta", "Volatil. a.a.", "VaR 95%"]
+        t = QTableWidget(0, len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        t.verticalHeader().setVisible(False)
+        h = t.horizontalHeader()
+        h.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        return t
+
+    def _load_risk(self) -> None:
+        if self._risk_worker and self._risk_worker.isRunning():
+            return
+        self._risk_loading.setVisible(True)
+        self._risk_table.setVisible(False)
+        self._risk_worker = RiskWorker(self._client)
+        self._risk_worker.data_ready.connect(self._on_risk_ready)
+        self._risk_worker.error_occurred.connect(
+            lambda msg: (
+                self._risk_loading.setText(f"Erro: {msg}"),
+                self._risk_table.setVisible(False),
+            )
+        )
+        self._risk_worker.start()
+
+    def _on_risk_ready(self, data: dict) -> None:
+        self._risk_loaded = True
+        self._risk_loading.setVisible(False)
+        self._risk_table.setVisible(True)
+
+        def _fmt_pct(v, suffix=""):
+            return f"{v:.2f}{suffix}" if v is not None else "N/D"
+
+        beta = data.get("portfolio_beta")
+        vol  = data.get("portfolio_volatility")
+        var  = data.get("portfolio_var_95")
+
+        self._risk_beta_card.set_value(_fmt_pct(beta))
+        self._risk_vol_card.set_value(_fmt_pct(vol, "%"))
+        self._risk_var_card.set_value(_fmt_pct(var, "%"))
+
+        self._div_canvas.plot(data.get("diversification", []))
+
+        assets = data.get("assets", [])
+        self._risk_table.setRowCount(len(assets))
+        for row, a in enumerate(assets):
+            cells = [
+                a.get("ticker", "—"),
+                a.get("name", ""),
+                a.get("asset_type", ""),
+                f"{a.get('weight_pct', 0):.1f}%",
+                _fmt_pct(a.get("beta")),
+                _fmt_pct(a.get("volatility"), "%"),
+                _fmt_pct(a.get("var_95"), "%"),
+            ]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if col == 0:
+                    item.setForeground(QColor("#4A9EFF"))
+                elif col in (4, 5, 6) and text != "N/D":
+                    item.setForeground(QColor("#FFB347"))
+                self._risk_table.setItem(row, col, item)
+
 
 # ======================================================================
 # Componentes de UI reutilizáveis
 # ======================================================================
+
+
+class _RiskMetricCard(QFrame):
+    """Card simples para exibir uma métrica de risco com tooltip explicativo."""
+
+    def __init__(self, title: str, value: str, tooltip: str = "") -> None:
+        super().__init__()
+        self.setObjectName("summaryCard")
+        if tooltip:
+            self.setToolTip(tooltip)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 16)
+        lay.setSpacing(4)
+
+        t = QLabel(title)
+        t.setStyleSheet("color: #8B90A7; font-size: 11px; font-weight: 600;")
+        self._val = QLabel(value)
+        self._val.setStyleSheet("color: #C8CAD8; font-size: 18px; font-weight: 700;")
+
+        lay.addWidget(t)
+        lay.addWidget(self._val)
+
+    def set_value(self, text: str) -> None:
+        self._val.setText(text)
 
 
 class _SummaryCard(QFrame):

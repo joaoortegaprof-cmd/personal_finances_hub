@@ -28,6 +28,7 @@ from backend.core.database import get_db
 from backend.models.asset import Asset, AssetPosition
 from backend.repositories.asset_repository import AssetRepository
 from backend.services.liquidity_service import LiquidityService
+from backend.services.risk_service import RiskService
 
 assets_router = APIRouter(prefix="/assets", tags=["Ativos"])
 portfolio_router = APIRouter(prefix="/portfolio", tags=["Carteira"])
@@ -170,3 +171,40 @@ async def get_portfolio_liquidity(db: AsyncSession = Depends(get_db)):
         total_portfolio=breakdown.total_portfolio,
         items=items,
     )
+
+
+@portfolio_router.get("/risk-analysis")
+async def get_risk_analysis(db: AsyncSession = Depends(get_db)):
+    """
+    Análise de risco da carteira.
+
+    Para cada ativo de renda variável com ticker, calcula (usando 1 ano de histórico):
+      - Beta vs IBOVESPA
+      - Volatilidade anualizada (% a.a.)
+      - VaR histórico diário a 95% de confiança (% do valor)
+
+    Também retorna:
+      - Métricas consolidadas da carteira (ponderadas pelo custo)
+      - Diversificação por classe de ativo (% do custo total)
+    """
+    service = RiskService(db)
+    result  = await service.analyse()
+    return {
+        "portfolio_beta":       result.portfolio_beta,
+        "portfolio_volatility": result.portfolio_volatility,
+        "portfolio_var_95":     result.portfolio_var_95,
+        "diversification":      result.diversification,
+        "assets": [
+            {
+                "asset_id":   a.asset_id,
+                "ticker":     a.ticker,
+                "name":       a.name,
+                "asset_type": a.asset_type,
+                "weight_pct": a.weight_pct,
+                "beta":       a.beta,
+                "volatility": a.volatility,
+                "var_95":     a.var_95,
+            }
+            for a in result.assets
+        ],
+    }
