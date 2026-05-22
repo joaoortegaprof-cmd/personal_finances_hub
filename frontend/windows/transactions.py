@@ -28,6 +28,13 @@ import calendar
 from datetime import date, datetime
 from typing import Any
 
+import matplotlib
+matplotlib.use("qtagg")
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
 from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -887,6 +894,105 @@ class DeleteRecurringWorker(QThread):
 
 
 # ======================================================================
+# Worker de fluxo de caixa
+# ======================================================================
+
+class CashflowWorker(QThread):
+    done           = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, months: int, mode: str) -> None:
+        super().__init__()
+        self._client = client
+        self._months = months
+        self._mode   = mode
+
+    def run(self) -> None:
+        try:
+            result = self._client._get(
+                "/cashflow/projection",
+                params={"months": self._months, "mode": self._mode},
+            )
+            self.done.emit(result)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+# ======================================================================
+# Canvas de fluxo de caixa
+# ======================================================================
+
+class CashflowCanvas(FigureCanvas):
+    """
+    Gráfico combinado de fluxo de caixa:
+      - Barras empilhadas (verde=receita / vermelho=despesa) por período
+      - Linha de saldo acumulado no eixo secundário
+    """
+
+    _BG   = "#1A1D2E"
+    _GRID = "#2A2D3E"
+
+    def __init__(self) -> None:
+        self._fig = Figure(figsize=(8, 3.2), facecolor=self._BG)
+        super().__init__(self._fig)
+        self.setMinimumHeight(220)
+        self._ax  = self._fig.add_subplot(111)
+        self._ax2 = self._ax.twinx()
+        self._style_axes()
+
+    def _style_axes(self) -> None:
+        for ax in (self._ax, self._ax2):
+            ax.set_facecolor(self._BG)
+            ax.tick_params(colors="#8B90A7", labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color(self._GRID)
+        self._ax.grid(axis="y", color=self._GRID, linewidth=0.5, linestyle="--")
+        self._fig.tight_layout(pad=1.2)
+
+    def plot(self, periods: list[dict]) -> None:
+        self._ax.cla()
+        self._ax2.cla()
+        self._style_axes()
+
+        if not periods:
+            self._fig.canvas.draw_idle()
+            return
+
+        labels   = [p["label"]           for p in periods]
+        income   = [p["income"]           for p in periods]
+        expenses = [p["expenses"]         for p in periods]
+        running  = [p["running_balance"]  for p in periods]
+
+        x = np.arange(len(labels))
+        w = 0.4
+
+        self._ax.bar(x - w / 2, income,   width=w, color="#00C896", alpha=0.85, label="Receita")
+        self._ax.bar(x + w / 2, expenses, width=w, color="#FF6B6B", alpha=0.85, label="Despesa")
+        self._ax2.plot(x, running, color="#4A9EFF", linewidth=2, marker="o",
+                       markersize=4, label="Saldo acum.")
+
+        self._ax.set_xticks(x)
+        self._ax.set_xticklabels(labels, rotation=30, ha="right", color="#8B90A7", fontsize=7)
+        self._ax.set_ylabel("R$", color="#8B90A7", fontsize=8)
+        self._ax2.set_ylabel("Saldo", color="#4A9EFF", fontsize=8)
+        self._ax2.tick_params(colors="#4A9EFF")
+
+        # Legenda combinada
+        h1, l1 = self._ax.get_legend_handles_labels()
+        h2, l2 = self._ax2.get_legend_handles_labels()
+        self._ax.legend(
+            h1 + h2, l1 + l2,
+            facecolor="#1A1D2E", edgecolor="#2A2D3E",
+            labelcolor="#C8CAD8", fontsize=7, loc="upper right",
+        )
+
+        self._fig.tight_layout(pad=1.2)
+        self._fig.canvas.draw_idle()
+
+
+# ======================================================================
 # Diálogo de recorrentes
 # ======================================================================
 
@@ -1199,6 +1305,9 @@ class TransactionsPage(QWidget):
         self._delete_recurring_worker: DeleteRecurringWorker | None = None
         self._recurring_loaded: bool = False
 
+        self._cashflow_worker: CashflowWorker | None = None
+        self._cashflow_loaded: bool = False
+
         self._all_transactions: list[dict] = []
         self._filtered_transactions: list[dict] = []
         self._accounts: list[dict] = []
@@ -1226,6 +1335,7 @@ class TransactionsPage(QWidget):
         tabs.addTab(self._build_transactions_tab(), "Lançamentos")
         tabs.addTab(self._build_debts_tab(), "Dívidas e Financiamentos")
         tabs.addTab(self._build_recurring_tab(), "Recorrentes")
+        tabs.addTab(self._build_cashflow_tab(), "Fluxo de Caixa")
         tabs.currentChanged.connect(self._on_tab_changed)
         outer.addWidget(tabs)
 
@@ -1383,6 +1493,86 @@ class TransactionsPage(QWidget):
         hdr.setSectionResizeMode(_REC_COL_NAME, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(_REC_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(_REC_COL_ACTIONS, 76)
+        return table
+
+    # ------------------------------------------------------------------
+    # Aba Fluxo de Caixa
+    # ------------------------------------------------------------------
+
+    def _build_cashflow_tab(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("dashboardContent")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(32, 20, 32, 20)
+        outer.setSpacing(12)
+
+        # ── Controles ────────────────────────────────────────────────
+        controls = QHBoxLayout()
+        controls.setSpacing(12)
+
+        mode_lbl = QLabel("Agrupamento:")
+        mode_lbl.setStyleSheet("color: #C8CAD8; font-size: 12px;")
+        self._cf_mode_combo = QComboBox()
+        self._cf_mode_combo.addItem("Semanal", "weekly")
+        self._cf_mode_combo.addItem("Mensal",  "monthly")
+
+        months_lbl = QLabel("Horizonte:")
+        months_lbl.setStyleSheet("color: #C8CAD8; font-size: 12px;")
+        self._cf_months_spin = QSpinBox()
+        self._cf_months_spin.setRange(1, 12)
+        self._cf_months_spin.setValue(3)
+        self._cf_months_spin.setSuffix(" meses")
+
+        self._cf_update_btn = QPushButton("↻  Atualizar")
+        self._cf_update_btn.clicked.connect(self._reload_cashflow)
+
+        controls.addWidget(mode_lbl)
+        controls.addWidget(self._cf_mode_combo)
+        controls.addWidget(months_lbl)
+        controls.addWidget(self._cf_months_spin)
+        controls.addStretch()
+        controls.addWidget(self._cf_update_btn)
+        outer.addLayout(controls)
+
+        # ── Cards de totais ─────────────────────────────────────────
+        totals_row = QHBoxLayout()
+        totals_row.setSpacing(12)
+        self._cf_income_card  = self._make_summary_card("Receita projetada",  "—", "#00C896")
+        self._cf_expense_card = self._make_summary_card("Despesa projetada",  "—", "#FF6B6B")
+        self._cf_balance_card = self._make_summary_card("Saldo do período",   "—", "#4A9EFF")
+        for c in (self._cf_income_card, self._cf_expense_card, self._cf_balance_card):
+            totals_row.addWidget(c)
+        outer.addLayout(totals_row)
+
+        # ── Gráfico ──────────────────────────────────────────────────
+        self._cf_canvas = CashflowCanvas()
+        outer.addWidget(self._cf_canvas)
+
+        # ── Tabela de eventos ────────────────────────────────────────
+        outer.addWidget(_section_lbl("Eventos projetados"))
+        self._cf_events_table = self._build_cashflow_events_table()
+        outer.addWidget(self._cf_events_table)
+
+        self._cf_loading_label = QLabel("Carregando projeção…")
+        self._cf_loading_label.setObjectName("loadingLabel")
+        self._cf_loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cf_loading_label.setVisible(False)
+        outer.addWidget(self._cf_loading_label)
+
+        return page
+
+    def _build_cashflow_events_table(self) -> QTableWidget:
+        headers = ["Data", "Descrição", "Categoria", "Tipo", "Valor"]
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        hdr = table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.setMaximumHeight(280)
         return table
 
     def _build_debt_table(self) -> QTableWidget:
@@ -1796,6 +1986,8 @@ class TransactionsPage(QWidget):
             self._load_debts()
         elif index == 2 and not self._recurring_loaded:
             self._load_recurring()
+        elif index == 3 and not self._cashflow_loaded:
+            self._load_cashflow()
 
     def _load_debts(self) -> None:
         self._debt_loading_label.setVisible(True)
@@ -2068,10 +2260,107 @@ class TransactionsPage(QWidget):
         self._recurring_loaded = False
         self._load_recurring()
 
+    # ------------------------------------------------------------------
+    # Aba Fluxo de Caixa: load + populate + reload
+    # ------------------------------------------------------------------
+
+    def _load_cashflow(self) -> None:
+        if self._cashflow_worker and self._cashflow_worker.isRunning():
+            return
+        months = self._cf_months_spin.value()
+        mode   = self._cf_mode_combo.currentData()
+        self._cf_loading_label.setText("Carregando projeção…")
+        self._cf_loading_label.setVisible(True)
+        self._cf_canvas.setVisible(False)
+        self._cf_events_table.setVisible(False)
+
+        self._cashflow_worker = CashflowWorker(self._client, months, mode)
+        self._cashflow_worker.done.connect(self._on_cashflow_loaded)
+        self._cashflow_worker.error_occurred.connect(
+            lambda msg: (
+                self._cf_loading_label.setText(f"Erro: {msg}"),
+                self._cf_canvas.setVisible(False),
+            )
+        )
+        self._cashflow_worker.start()
+
+    def _on_cashflow_loaded(self, data: dict) -> None:
+        self._cashflow_loaded = True
+        self._cf_loading_label.setVisible(False)
+        self._cf_canvas.setVisible(True)
+        self._cf_events_table.setVisible(True)
+
+        periods = data.get("periods", [])
+        events  = data.get("events",  [])
+
+        # Atualiza cards de totais
+        def _brl(v):
+            return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        total_income   = data.get("total_income",   0)
+        total_expenses = data.get("total_expenses", 0)
+        balance        = total_income - total_expenses
+
+        for card, val in [
+            (self._cf_income_card,  _brl(total_income)),
+            (self._cf_expense_card, _brl(total_expenses)),
+            (self._cf_balance_card, _brl(balance)),
+        ]:
+            labels = card.findChildren(QLabel)
+            if len(labels) >= 2:
+                labels[1].setText(val)
+
+        self._cf_canvas.plot(periods)
+        self._populate_cashflow_events(events)
+
+    def _populate_cashflow_events(self, events: list[dict]) -> None:
+        _EVENT_LABELS = {
+            "income":    "Receita",
+            "recurring": "Recorrente",
+            "debt":      "Dívida",
+            "invoice":   "Fatura",
+        }
+        _EVENT_COLORS = {
+            "income":    "#00C896",
+            "recurring": "#FFB347",
+            "debt":      "#FF6B6B",
+            "invoice":   "#8B90A7",
+        }
+
+        self._cf_events_table.setRowCount(len(events))
+        for row, ev in enumerate(events):
+            ev_type = ev.get("type", "")
+            amount  = float(ev.get("amount", 0))
+            color   = _EVENT_COLORS.get(ev_type, "#C8CAD8")
+            cells = [
+                _fmt_date(ev.get("date", "")),
+                ev.get("description", ""),
+                ev.get("category", ""),
+                _EVENT_LABELS.get(ev_type, ev_type),
+                _fmt_brl(amount),
+            ]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if col == 4:
+                    item.setForeground(QColor(color))
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._cf_events_table.setItem(row, col, item)
+
+    def _reload_cashflow(self) -> None:
+        self._cashflow_loaded = False
+        self._load_cashflow()
+
 
 # ======================================================================
 # Utilitários
 # ======================================================================
+
+
+def _section_lbl(text: str) -> QLabel:
+    """Rótulo de seção com estilo de subtítulo."""
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color: #8B90A7; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;")
+    return lbl
 
 
 def _icon_btn(icon: str, tooltip: str) -> tuple["QPushButton", "QWidget"]:
