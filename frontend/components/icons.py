@@ -248,6 +248,14 @@ _SVGS: dict[str, str] = {
       <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
     </svg>""",
 
+    "cashflow": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="7" width="4" height="10"/>
+      <rect x="9" y="4" width="4" height="13"/>
+      <rect x="16" y="9" width="4" height="8"/>
+      <polyline points="2 3 22 3"/>
+      <polyline points="2 21 22 21"/>
+    </svg>""",
+
     # --- Categorias de transação ---
     "cat_housing": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>

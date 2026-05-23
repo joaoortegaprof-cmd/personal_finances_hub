@@ -36,6 +36,7 @@ from frontend.components.icons import icon as _svg_icon
 from frontend.components.signals import app_signals
 from frontend.windows.accounts import AccountsPage
 from frontend.windows.cards import CardsPage
+from frontend.windows.cashflow import CashflowPage
 from frontend.windows.dashboard import DashboardPage
 from frontend.windows.investments import InvestmentsPage
 from frontend.windows.market import MarketPage
@@ -67,16 +68,17 @@ class _NotificationWorker(QThread):
 
 # Itens da sidebar: (label exibido, índice no QStackedWidget)
 _NAV_ITEMS: list[tuple[str, int]] = [
-    ("Dashboard",    0),
-    ("Lançamentos",  1),
-    ("Contas",       2),
-    ("Cartões",      3),
-    ("Investimentos",4),
-    ("Mercado",      5),
-    ("Relatórios",   6),
-    ("IR e DARF",    7),
-    ("Configurações",8),
-    ("Simulações",   9),
+    ("Dashboard",     0),
+    ("Lançamentos",   1),
+    ("Contas",        2),
+    ("Cartões",       3),
+    ("Investimentos", 4),
+    ("Mercado",       5),
+    ("Fluxo de Caixa",6),
+    ("Relatórios",    7),
+    ("IR e DARF",     8),
+    ("Configurações", 9),
+    ("Simulações",   10),
 ]
 
 # Ícones SVG para cada item da sidebar (mesma ordem de _NAV_ITEMS)
@@ -87,6 +89,7 @@ _NAV_ICONS: list[str] = [
     "card",        # Cartões
     "trending_up", # Investimentos
     "market",      # Mercado
+    "cashflow",    # Fluxo de Caixa
     "chart",       # Relatórios
     "tax",         # IR e DARF
     "settings",    # Configurações
@@ -309,19 +312,23 @@ class MainWindow(QMainWindow):
         self._market_page = MarketPage()
         stack.addWidget(self._market_page)
 
-        # 6 — Relatórios
+        # 6 — Fluxo de Caixa
+        self._cashflow_page = CashflowPage()
+        stack.addWidget(self._cashflow_page)
+
+        # 7 — Relatórios
         self._reports_page = ReportsPage()
         stack.addWidget(self._reports_page)
 
-        # 7 — IR e DARF
+        # 8 — IR e DARF
         self._tax_page = TaxPage()
         stack.addWidget(self._tax_page)
 
-        # 8 — Configurações e Metas
+        # 9 — Configurações e Metas
         self._settings_page = SettingsPage()
         stack.addWidget(self._settings_page)
 
-        # 9 — Simulações financeiras
+        # 10 — Simulações financeiras
         self._simulation_page = SimulationPage()
         stack.addWidget(self._simulation_page)
 

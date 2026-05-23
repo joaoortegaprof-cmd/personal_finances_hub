@@ -159,6 +159,31 @@ class ApiClient:
         return self._get("/transactions/essential-cost")
 
     # ------------------------------------------------------------------
+    # Fluxo de caixa
+    # ------------------------------------------------------------------
+
+    def get_cashflow_projection(
+        self,
+        mode: str = "weekly",
+        months: int = 3,
+    ) -> dict:
+        """
+        Retorna a projeção de fluxo de caixa para os próximos meses.
+
+        mode   : "weekly" | "monthly"
+        months : 1 | 3 | 6
+
+        Retorna: mode, months, avg_income, total_income, total_expenses,
+        periods (label, start, end, income, expenses, balance, running_balance,
+        event_count) e events (date, description, amount, type, category,
+        is_confirmed).
+        """
+        return self._get(
+            "/cashflow/projection",
+            params={"mode": mode, "months": months},
+        )
+
+    # ------------------------------------------------------------------
     # Carteira de investimentos
     # ------------------------------------------------------------------
 
