@@ -64,16 +64,19 @@ class AssetRepository(BaseRepository[Asset]):
 
             posição = SUM(quantity de todas as operações)
 
-        Como operações de venda têm quantity negativa, o resultado
-        reflete o que o investidor ainda detém.
+        Compras têm quantity positiva; vendas têm quantity negativa.
+        Operações com quantity=0 (ajustes zerados) são ignoradas.
         Retorna 0 se não houver operações ou se o ativo foi totalmente vendido.
         """
         result = await self._session.execute(
             select(
                 func.coalesce(func.sum(AssetPosition.quantity), Decimal("0"))
-            ).where(AssetPosition.asset_id == asset_id)
+            ).where(
+                AssetPosition.asset_id == asset_id,
+                AssetPosition.quantity != 0,  # ignora ajustes zerados
+            )
         )
-        return result.scalar_one()
+        return result.scalar_one() or Decimal("0")
 
     # -----------------------------------------------------------------
     # Preço médio ponderado (aproximação)
@@ -81,33 +84,19 @@ class AssetRepository(BaseRepository[Asset]):
 
     async def calculate_avg_price(self, asset_id: int) -> Decimal:
         """
-        Calcula o preço médio de aquisição do ativo (CMP aproximado).
+        Preço médio ponderado das COMPRAS reais do ativo (CMP aproximado).
 
-        Comportamento pós-ajuste manual:
-          Se o ativo passou por um ajuste via POST /adjust-position, esse
-          endpoint insere um SELL marcado com "[AJUSTE]" no campo notes.
-          Nesse caso, apenas as operações de BUY registradas APÓS o último
-          SELL de ajuste são consideradas — o que garante que o preço médio
-          retornado corresponda exatamente ao valor informado no ajuste mais
-          recente (mais eventuais compras realizadas depois).
+        Fórmula:
+            preço_médio = SUM(qty × price) / SUM(qty)
+            apenas para operações BUY com quantity > 0.
 
-        Retorna 0 se não houver operações de compra relevantes.
+        Ignora: vendas, ajustes com qty=0 e operações com qty negativa.
+        Retorna 0 se não houver compras reais.
         """
-        # Descobre o ID do SELL de ajuste mais recente (se houver)
-        adj_sell_result = await self._session.execute(
-            select(func.max(AssetPosition.id)).where(
-                AssetPosition.asset_id == asset_id,
-                AssetPosition.operation_type == OperationType.SELL,
-                AssetPosition.notes.like("[AJUSTE]%"),
-            )
-        )
-        last_adj_sell_id: int = adj_sell_result.scalar_one() or 0
-
-        # Agrega custo e quantidade apenas das compras após o último ajuste
         result = await self._session.execute(
             select(
                 func.coalesce(
-                    func.sum(AssetPosition.quantity * AssetPosition.unit_price + AssetPosition.fees),
+                    func.sum(AssetPosition.quantity * AssetPosition.unit_price),
                     Decimal("0"),
                 ).label("total_cost"),
                 func.coalesce(
@@ -117,17 +106,49 @@ class AssetRepository(BaseRepository[Asset]):
             ).where(
                 AssetPosition.asset_id == asset_id,
                 AssetPosition.operation_type == OperationType.BUY,
-                AssetPosition.id > last_adj_sell_id,
+                AssetPosition.quantity > 0,  # apenas compras reais
             )
         )
         row = result.one()
         total_cost: Decimal = row.total_cost
         total_qty: Decimal = row.total_qty
 
-        if total_qty == 0:
-            return Decimal("0.00")
+        if not total_qty or total_qty == 0:
+            return Decimal("0")
 
-        return (total_cost / total_qty).quantize(Decimal("0.000001"))
+        return (Decimal(str(total_cost)) / Decimal(str(total_qty))).quantize(Decimal("0.000001"))
+
+    async def get_asset_current_value(
+        self,
+        asset_id: int,
+        current_price: Decimal | None = None,
+    ) -> dict:
+        """
+        Calcula valor atual, custo investido e rentabilidade de um ativo.
+
+        Se ``current_price`` for informado, usa qty × current_price como
+        valor de mercado.  Caso contrário, usa qty × avg_price (custo).
+
+        Retorna dict com os campos usados na exibição da tabela de posições.
+        """
+        qty       = await self.get_consolidated_position(asset_id)
+        avg_price = await self.calculate_avg_price(asset_id)
+
+        invested      = qty * avg_price
+        current_value = (qty * current_price if current_price and qty > 0 else invested)
+
+        return_pct = (
+            (current_value - invested) / invested * 100
+            if invested > 0 else Decimal("0")
+        )
+
+        return {
+            "quantity":      qty,
+            "avg_price":     avg_price,
+            "invested":      invested,
+            "current_value": current_value,
+            "return_pct":    return_pct,
+        }
 
     # -----------------------------------------------------------------
     # Listagem por janela de liquidez

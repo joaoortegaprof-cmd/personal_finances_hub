@@ -92,11 +92,15 @@ class InvestmentsWorker(QThread):
     Busca todos os dados da página em um único round-trip de worker:
       1. GET /assets              → lista de ativos cadastrados
       2. GET /assets/{id}/position para cada ativo → posições consolidadas
-      3. GET /portfolio/summary   → totais por tipo (cards de distribuição)
-      4. GET /portfolio/liquidity → breakdown de liquidez
+      3. GET /portfolio/liquidity → breakdown de liquidez
+
+    Os totais da carteira (total_invested, total_current, maior posição)
+    são calculados a partir das posições individuais para evitar usar a
+    sumarização por tipo, que pode produzir valores negativos quando há
+    operações de ajuste no histórico (buy_cost − sell_proceeds distorcido).
     """
 
-    # (assets_list, positions_list, portfolio_summary, liquidity_breakdown)
+    # (assets_list, positions_list, computed_portfolio, liquidity_breakdown)
     data_ready = pyqtSignal(list, list, dict, dict)
     error_occurred = pyqtSignal(str)
 
@@ -104,13 +108,63 @@ class InvestmentsWorker(QThread):
         super().__init__()
         self._client = client
 
+    # ------------------------------------------------------------------
+    # Totais computados a partir das posições (não usa /portfolio/summary)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_portfolio_totals(positions: list[dict]) -> dict:
+        """
+        Calcula totais da carteira direto das posições individuais.
+
+        Usa estimated_cost (qty × avg_price) como custo investido e
+        current_value como valor de mercado atual (quando disponível).
+        """
+        total_invested = 0.0
+        total_current  = 0.0
+        largest_value  = 0.0
+        largest_pos: dict | None = None
+
+        for pos in positions:
+            invested = float(pos.get("estimated_cost", 0) or 0)
+            current  = float(pos.get("current_value",  invested) or invested)
+
+            total_invested += invested
+            total_current  += current
+
+            if invested > largest_value:
+                largest_value = invested
+                largest_pos   = pos
+
+        largest_position = None
+        if largest_pos and largest_value > 0:
+            pct = largest_value / total_invested * 100 if total_invested > 0 else 0.0
+            largest_position = {
+                "ticker":           largest_pos.get("ticker") or largest_pos.get("name", "—"),
+                "value":            largest_value,
+                "pct_of_portfolio": pct,
+            }
+
+        total_return_pct = (
+            (total_current - total_invested) / total_invested * 100
+            if total_invested > 0 else 0.0
+        )
+
+        return {
+            "total_invested":  total_invested,
+            "total_current":   total_current,
+            "total_return_pct": total_return_pct,
+            "largest_position": largest_position,
+        }
+
+    # ------------------------------------------------------------------
+
     def run(self) -> None:
         try:
             assets    = self._client.get_assets()
-            portfolio = self._client.get_portfolio_summary()
             liquidity = self._client.get_liquidity()
 
-            # Etapa 6: posição + cotação de mercado para cada ativo
+            # Posição + cotação de mercado para cada ativo
             positions: list[dict] = []
             for asset in assets:
                 try:
@@ -130,7 +184,7 @@ class InvestmentsWorker(QThread):
                 ticker = pos.get("ticker") or asset.get("ticker")
                 if ticker:
                     try:
-                        quote = self._client.get_market_quote(ticker)
+                        quote     = self._client.get_market_quote(ticker)
                         cur_price = float(quote.get("price", 0) or 0)
                         day_chg   = float(quote.get("change_pct", 0) or 0)
                         net_qty   = float(pos.get("net_quantity", 0))
@@ -146,7 +200,10 @@ class InvestmentsWorker(QThread):
 
                 positions.append(pos)
 
-            self.data_ready.emit(assets, positions, portfolio, liquidity)
+            # Calcula totais da carteira a partir das posições (não do /portfolio/summary)
+            computed_portfolio = self._compute_portfolio_totals(positions)
+
+            self.data_ready.emit(assets, positions, computed_portfolio, liquidity)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
@@ -2060,30 +2117,35 @@ class InvestmentsPage(QWidget):
         self._loading_label.setVisible(False)
         self._set_content_visible(True)
 
-        # Cards de resumo
-        total = float(portfolio.get("total_invested", 0))
-        self._card_total.set_value(_fmt_brl(total))
-        self._card_assets.set_value(str(len(positions)))
+        # ── Cards de resumo ──────────────────────────────────────────
+        # Usa totais calculados pelo worker a partir das posições individuais
+        # (imune ao buy_cost−sell_proceeds distorcido do /portfolio/summary)
+        total_invested = float(portfolio.get("total_invested", 0))
+        total_current  = float(portfolio.get("total_current",  total_invested))
 
-        # Maior posição por tipo (para o card de distribuição)
-        by_type = portfolio.get("by_type", [])
-        if by_type:
-            top = max(by_type, key=lambda e: float(e.get("net_invested", 0)))
-            type_name = _ASSET_TYPE_DISPLAY.get(top["asset_type"], top["asset_type"])
-            net = float(top.get("net_invested", 0))
-            pct = (net / total * 100) if total > 0 else 0
+        # Conta apenas ativos com posição aberta (qty > 0)
+        active_count = sum(
+            1 for p in positions if float(p.get("net_quantity", 0)) > 0
+        )
+        self._card_total.set_value(_fmt_brl(total_invested))
+        self._card_assets.set_value(str(active_count))
+
+        # Maior posição individual (por ativo, não por tipo)
+        lp = portfolio.get("largest_position")
+        if lp:
             self._card_distribution.set_value(
-                type_name, sub=f"{_fmt_brl(net)} ({pct:.1f}%)"
+                lp["ticker"],
+                sub=f"{_fmt_brl(lp['value'])} ({lp['pct_of_portfolio']:.1f}%)",
             )
         else:
             self._card_distribution.set_value("—")
 
-        # Seções por categoria (Etapas 1-4)
+        # ── Seções por categoria (Etapas 1-4) ────────────────────────
         self._populate_categories(positions)
         self._portfolio_content.setVisible(True)
 
-        # Breakdown de liquidez
-        self._populate_liquidity(liquidity, total)
+        # ── Breakdown de liquidez ─────────────────────────────────────
+        self._populate_liquidity(liquidity, total_invested)
 
     def _on_error(self, message: str) -> None:
         self._loading_label.setText(f"Erro ao carregar: {message}")
