@@ -27,11 +27,11 @@ from typing import Any
 
 import base64
 import io
-from collections import defaultdict
-
 import json
 import subprocess
 import sys
+from collections import defaultdict
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextDocument
@@ -64,9 +64,6 @@ _HISTORY_FILE = _REPORTS_DIR / ".history.json"
 
 from frontend.components.api_client import ApiClient, ApiError
 from frontend.components.icons import icon as _svg_icon
-
-# Também importa o Path no topo (may already be there via calendar import)
-from pathlib import Path
 
 
 # ======================================================================
