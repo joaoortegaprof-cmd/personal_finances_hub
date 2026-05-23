@@ -26,6 +26,7 @@ from backend.api.routes.cards import router as cards_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.debts import router as debts_router
 from backend.api.routes.dividends import router as dividends_router
+from backend.api.routes.import_routes import router as import_router
 from backend.api.routes.market import router as market_router
 from backend.api.routes.cashflow import router as cashflow_router
 from backend.api.routes.recurring import router as recurring_router
@@ -87,6 +88,7 @@ app.add_middleware(
 
 app.include_router(accounts_router)
 app.include_router(cards_router)
+app.include_router(import_router)
 app.include_router(transactions_router)
 app.include_router(assets_router)
 app.include_router(portfolio_router)
