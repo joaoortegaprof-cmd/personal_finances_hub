@@ -67,7 +67,7 @@ from frontend.components.colors import (
     COLOR_FIXED_INCOME, COLOR_CRYPTO, COLOR_INTERNATIONAL,
     COLOR_PENSION, COLOR_OTHER, COLOR_CASH,
     COLOR_ASSET_RGB, COLOR_EXPENSE_RGB, COLOR_INVESTMENT_RGB,
-    CATEGORY_COLOR, hex_to_rgb,
+    CATEGORY_COLOR, CATEGORY_PALETTE, hex_to_rgb,
 )
 from frontend.components.icons import icon as _svg_icon
 from frontend.components.signals import app_signals
@@ -335,7 +335,21 @@ def _build_yearly_series(
 
 
 def _build_distribution(portfolio: dict, accounts: list[dict]) -> list[dict]:
+    """
+    Distribuição geral por categoria — usa a cor semântica principal de cada tipo.
+    """
     totals: dict[str, float] = defaultdict(float)
+    # Mapa categoria → asset_type para recuperar a cor do CATEGORY_COLOR
+    _cat_to_type: dict[str, str] = {
+        "Ações":     "acao",
+        "FIIs":      "fii",
+        "ETFs":      "etf",
+        "Tesouro":   "tesouro_direto",
+        "Renda Fixa":"renda_fixa",
+        "Cripto":    "criptomoeda",
+        "Contas":    "outros",
+        "Outros":    "outros",
+    }
 
     for entry in portfolio.get("by_type", []):
         cat = _TYPE_TO_CAT.get(str(entry.get("asset_type", "")), "Outros")
@@ -346,7 +360,12 @@ def _build_distribution(portfolio: dict, accounts: list[dict]) -> list[dict]:
         totals["Contas"] += accounts_total
 
     return [
-        {"category": c, "value": v, "color": _COLOR_MAP.get(c, "#94A3B8")}
+        {
+            "category": c,
+            "value":    v,
+            # Cor da categoria via CATEGORY_COLOR → cor semântica consistente
+            "color": CATEGORY_COLOR.get(_cat_to_type.get(c, "outros"), _COLOR_MAP.get(c, COLOR_OTHER)),
+        }
         for c, v in sorted(totals.items(), key=lambda x: x[1], reverse=True)
         if v > 0
     ]
@@ -357,12 +376,26 @@ def _build_category_donuts(asset_positions: list[dict]) -> dict[str, list[dict]]
     Agrupa posições de ativos por categoria para os donuts individuais.
 
     Retorna dict: categoria → lista de {ticker, name, value, color}
+
+    Cada categoria usa sua própria PALETTE_* (tons do escuro ao claro),
+    garantindo que ativos do mesmo tipo tenham cores consistentes.
     """
+    # Mapeia categoria display → asset_type para recuperar a paleta
+    _cat_to_type: dict[str, str] = {
+        "Ações":      "acao",
+        "FIIs":       "fii",
+        "ETFs":       "etf",
+        "Tesouro":    "tesouro_direto",
+        "Renda Fixa": "renda_fixa",
+        "Cripto":     "criptomoeda",
+        "Outros":     "outros",
+    }
+
     cat_assets: dict[str, list[dict]] = {}
 
     for pos in asset_positions:
         asset_type = pos.get("asset_type", "outros")
-        cat  = _TYPE_TO_CAT.get(str(asset_type), "Outros")
+        cat   = _TYPE_TO_CAT.get(str(asset_type), "Outros")
         value = float(pos.get("estimated_cost", 0))
         if value <= 0:
             continue
@@ -374,11 +407,13 @@ def _build_category_donuts(asset_positions: list[dict]) -> dict[str, list[dict]]
             "value":  value,
         })
 
-    # Ordena por valor descendente e atribui cores fixas por posição
+    # Ordena por valor descendente e atribui cores da paleta da categoria
     for cat, items in cat_assets.items():
         items.sort(key=lambda x: x["value"], reverse=True)
+        atype   = _cat_to_type.get(cat, "outros")
+        palette = CATEGORY_PALETTE.get(atype, _ASSET_SLOT_COLORS)
         for i, item in enumerate(items):
-            item["color"] = _ASSET_SLOT_COLORS[i % len(_ASSET_SLOT_COLORS)]
+            item["color"] = palette[i % len(palette)]
 
     return cat_assets
 
