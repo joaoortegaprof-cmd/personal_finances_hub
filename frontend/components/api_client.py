@@ -348,6 +348,21 @@ class ApiClient:
         """Retorna posição consolidada de um ativo: quantidade líquida e preço médio."""
         return self._get(f"/assets/{asset_id}/position")
 
+    def adjust_position(self, asset_id: int, payload: dict[str, Any]) -> dict:
+        """
+        Ajusta a posição de um ativo diretamente via POST /assets/{id}/adjust-position.
+
+        O backend zera a posição atual (SELL com qty negativa) e cria uma nova
+        BUY com target_quantity/target_avg_price — tudo em uma transação atômica.
+
+        payload esperado:
+          target_quantity  : str  (Decimal serializado, ex: "500.000000")
+          target_avg_price : str  (Decimal serializado, ex: "20.00")
+          op_date          : str  (ISO date, ex: "2026-05-23")
+          reason           : str | None
+        """
+        return self._post(f"/assets/{asset_id}/adjust-position", payload)
+
     # ------------------------------------------------------------------
     # Contas — escrita
     # ------------------------------------------------------------------

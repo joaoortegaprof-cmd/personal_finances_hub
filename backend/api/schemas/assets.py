@@ -130,3 +130,28 @@ class LiquidityBreakdownOut(BaseModel):
     total_liquid: Decimal
     total_portfolio: Decimal
     items: list[AssetLiquidityItemOut]
+
+
+class PositionAdjustIn(BaseModel):
+    """
+    Payload para ajuste direto de posição de ativo.
+
+    O endpoint calcula a diferença entre a posição atual e a meta,
+    cria as operações de correção dentro de uma única transação e
+    retorna os valores resultantes.
+    """
+
+    target_quantity: Decimal = Field(ge=Decimal("0"))
+    target_avg_price: Decimal = Field(ge=Decimal("0"))
+    op_date: date
+    reason: str | None = None
+
+
+class PositionAdjustOut(BaseModel):
+    asset_id: int
+    ticker: str | None
+    previous_quantity: Decimal
+    previous_avg_price: Decimal
+    new_quantity: Decimal
+    new_avg_price: Decimal
+    operations_created: int

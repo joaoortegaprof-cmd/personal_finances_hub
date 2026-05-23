@@ -106,27 +106,45 @@ class InvestmentsWorker(QThread):
 
     def run(self) -> None:
         try:
-            assets = self._client.get_assets()
+            assets    = self._client.get_assets()
             portfolio = self._client.get_portfolio_summary()
             liquidity = self._client.get_liquidity()
 
-            # Busca posição consolidada para cada ativo (N+1 necessário — ver docstring)
+            # Etapa 6: posição + cotação de mercado para cada ativo
             positions: list[dict] = []
             for asset in assets:
                 try:
                     pos = self._client.get_asset_position(asset["id"])
-                    positions.append(pos)
                 except ApiError:
-                    # Ativo sem operações registradas — posição zerada
-                    positions.append({
-                        "asset_id": asset["id"],
-                        "ticker": asset.get("ticker"),
-                        "name": asset["name"],
-                        "asset_type": asset["asset_type"],
-                        "net_quantity": "0",
-                        "avg_price": "0",
+                    pos = {
+                        "asset_id":       asset["id"],
+                        "ticker":         asset.get("ticker"),
+                        "name":           asset["name"],
+                        "asset_type":     asset["asset_type"],
+                        "net_quantity":   "0",
+                        "avg_price":      "0",
                         "estimated_cost": "0",
-                    })
+                    }
+
+                # Enriquece com cotação se o ativo tiver ticker
+                ticker = pos.get("ticker") or asset.get("ticker")
+                if ticker:
+                    try:
+                        quote = self._client.get_market_quote(ticker)
+                        cur_price = float(quote.get("price", 0) or 0)
+                        day_chg   = float(quote.get("change_pct", 0) or 0)
+                        net_qty   = float(pos.get("net_quantity", 0))
+                        cur_value = (
+                            cur_price * net_qty if cur_price > 0
+                            else float(pos.get("estimated_cost", 0))
+                        )
+                        pos["current_price"]  = cur_price
+                        pos["current_value"]  = cur_value
+                        pos["day_change_pct"] = day_chg
+                    except Exception:
+                        pass   # cotação é opcional — falha silenciosa
+
+                positions.append(pos)
 
             self.data_ready.emit(assets, positions, portfolio, liquidity)
         except ApiError as exc:
@@ -663,70 +681,49 @@ class NewOperationDialog(QDialog):
         }
 
 
-class PositionAdjustWorker(QThread):
-    """Zera a posição atual e cria uma nova via operações compra/venda."""
+class AdjustPositionWorker(QThread):
+    """
+    Executa POST /assets/{id}/adjust-position em background.
 
-    done    = pyqtSignal()
+    O backend zera a posição atual (SELL com qty negativa) e cria
+    uma nova BUY — tudo em uma única transação atômica.
+    """
+
+    done           = pyqtSignal(dict)   # retorna o PositionAdjustOut
     error_occurred = pyqtSignal(str)
 
-    def __init__(
-        self,
-        client: ApiClient,
-        asset_id: int,
-        quantity: float,
-        avg_price: float,
-        op_date: date,
-    ) -> None:
+    def __init__(self, client: ApiClient, asset_id: int, payload: dict[str, Any]) -> None:
         super().__init__()
-        self._client    = client
-        self._asset_id  = asset_id
-        self._quantity  = quantity
-        self._avg_price = avg_price
-        self._op_date   = op_date
+        self._client   = client
+        self._asset_id = asset_id
+        self._payload  = payload
 
     def run(self) -> None:
         try:
-            pos = self._client.get_asset_position(self._asset_id)
-            current_qty = float(pos.get("net_quantity", 0))
-            current_avg = float(pos.get("avg_price", 0))
-
-            if current_qty > 0:
-                self._client.create_asset_operation(
-                    self._asset_id,
-                    {
-                        "operation_date": self._op_date.isoformat(),
-                        "quantity": f"{current_qty:.6f}",
-                        "unit_price": f"{current_avg:.2f}",
-                        "fees": "0.00",
-                        "operation_type": "venda",
-                        "notes": "Ajuste manual de posição",
-                    },
-                )
-
-            if self._quantity > 0:
-                self._client.create_asset_operation(
-                    self._asset_id,
-                    {
-                        "operation_date": self._op_date.isoformat(),
-                        "quantity": f"{self._quantity:.6f}",
-                        "unit_price": f"{self._avg_price:.2f}",
-                        "fees": "0.00",
-                        "operation_type": "compra",
-                        "notes": "Ajuste manual de posição",
-                    },
-                )
-            self.done.emit()
+            result = self._client.adjust_position(self._asset_id, self._payload)
+            self.done.emit(result)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
             self.error_occurred.emit(f"Erro inesperado: {exc}")
 
 
+_ADJUST_REASON_OPTIONS = [
+    "Correção manual",
+    "Dividendos em cotas / Bonificação",
+    "Migração de corretora",
+    "Reconciliação de extrato",
+    "Erro de lançamento anterior",
+    "Outro",
+]
+
+
 class EditAssetDialog(NewAssetDialog):
     """
     Formulário modal para editar um ativo — duas abas:
       1. Dados do Ativo  — mesmos campos do cadastro
-      2. Posição na Carteira — ajuste direto de qty/preço médio
+      2. Ajuste de Posição — carrega posição atual automaticamente,
+         permite corrigir qty/preço médio e exibe preview do resultado.
     """
 
     def __init__(
@@ -736,6 +733,9 @@ class EditAssetDialog(NewAssetDialog):
         parent: QWidget | None = None,
     ) -> None:
         self._edit_client = client
+        # Guarda posição atual para comparação (carregada em _prefill)
+        self._current_qty: float = 0.0
+        self._current_avg: float = 0.0
         super().__init__(parent)
         self.setWindowTitle("Editar Ativo")
         self._asset_id = asset["id"]
@@ -761,52 +761,106 @@ class EditAssetDialog(NewAssetDialog):
         t1_layout.addStretch()
         tabs.addTab(tab1, "Dados do Ativo")
 
-        # ── Aba 2: Posição na Carteira ────────────────────────────────
+        # ── Aba 2: Ajuste de Posição ──────────────────────────────────
         tab2 = QWidget()
         t2_layout = QVBoxLayout(tab2)
         t2_layout.setContentsMargins(0, 12, 0, 0)
         t2_layout.setSpacing(12)
 
-        warn = QLabel(
-            "Atenção: isto substituirá a posição atual pelo valor informado. "
-            "O histórico de operações será preservado."
+        # Painel: posição atual (carregada automaticamente)
+        cur_frame = QFrame()
+        cur_frame.setStyleSheet(
+            "QFrame { background: #1E2138; border-radius: 6px; border: 1px solid #2E3250; }"
         )
-        warn.setWordWrap(True)
-        warn.setStyleSheet("color: #FFB347; font-size: 11px;")
-        t2_layout.addWidget(warn)
+        cur_lay = QVBoxLayout(cur_frame)
+        cur_lay.setContentsMargins(16, 12, 16, 12)
+        cur_lay.setSpacing(4)
+
+        cur_title = QLabel("Posição Atual (calculada pelo histórico)")
+        cur_title.setStyleSheet("color: #8B90A7; font-size: 11px; font-weight: 600;")
+        cur_lay.addWidget(cur_title)
+
+        self._cur_qty_lbl = QLabel("Quantidade:  —    •    Preço Médio: —")
+        self._cur_qty_lbl.setStyleSheet("color: #C8CAD8; font-size: 12px;")
+        cur_lay.addWidget(self._cur_qty_lbl)
+
+        self._cur_cost_lbl = QLabel("Custo Total: —")
+        self._cur_cost_lbl.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        cur_lay.addWidget(self._cur_cost_lbl)
+
+        t2_layout.addWidget(cur_frame)
+
+        # Formulário de ajuste
+        adj_title = QLabel("Ajustar Para")
+        adj_title.setStyleSheet("color: #E8EAED; font-size: 12px; font-weight: 600;")
+        t2_layout.addWidget(adj_title)
 
         pos_form = QFormLayout()
-        pos_form.setSpacing(12)
+        pos_form.setSpacing(10)
         pos_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self._pos_qty = QDoubleSpinBox()
         self._pos_qty.setRange(0.0, 99_999_999.0)
         self._pos_qty.setDecimals(6)
         self._pos_qty.setValue(0.0)
-        pos_form.addRow("Quantidade", self._pos_qty)
+        self._pos_qty.valueChanged.connect(self._update_preview)
+        pos_form.addRow("Quantidade *", self._pos_qty)
 
         self._pos_avg_price = QDoubleSpinBox()
-        self._pos_avg_price.setRange(0.0, 999_999.99)
-        self._pos_avg_price.setDecimals(2)
+        self._pos_avg_price.setRange(0.0, 9_999_999.99)
+        self._pos_avg_price.setDecimals(4)
         self._pos_avg_price.setPrefix("R$ ")
         self._pos_avg_price.setValue(0.0)
-        pos_form.addRow("Preço médio", self._pos_avg_price)
+        self._pos_avg_price.valueChanged.connect(self._update_preview)
+        pos_form.addRow("Preço Médio *", self._pos_avg_price)
 
         self._pos_date = QDateEdit()
         self._pos_date.setCalendarPopup(True)
         self._pos_date.setDisplayFormat("dd/MM/yyyy")
         self._pos_date.setDate(QDate.currentDate())
-        pos_form.addRow("Data da posição", self._pos_date)
+        pos_form.addRow("Data do Ajuste", self._pos_date)
+
+        self._pos_reason = QComboBox()
+        for opt in _ADJUST_REASON_OPTIONS:
+            self._pos_reason.addItem(opt)
+        pos_form.addRow("Motivo", self._pos_reason)
 
         t2_layout.addLayout(pos_form)
 
-        recalc_btn = QPushButton("Recalcular pelo histórico")
-        recalc_btn.setToolTip("Busca as operações reais e preenche qty/preço médio")
-        recalc_btn.clicked.connect(self._recalc_from_history)
-        t2_layout.addWidget(recalc_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        # Painel de preview do resultado
+        prev_frame = QFrame()
+        prev_frame.setStyleSheet(
+            "QFrame { background: #1A2E28; border-radius: 6px; border: 1px solid #1E4D3A; }"
+        )
+        prev_lay = QVBoxLayout(prev_frame)
+        prev_lay.setContentsMargins(16, 12, 16, 12)
+        prev_lay.setSpacing(4)
+
+        prev_title = QLabel("Resultado do Ajuste")
+        prev_title.setStyleSheet("color: #00C896; font-size: 11px; font-weight: 600;")
+        prev_lay.addWidget(prev_title)
+
+        self._prev_main_lbl = QLabel("—")
+        self._prev_main_lbl.setStyleSheet("color: #E8EAED; font-size: 12px;")
+        prev_lay.addWidget(self._prev_main_lbl)
+
+        self._prev_delta_lbl = QLabel("")
+        self._prev_delta_lbl.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        prev_lay.addWidget(self._prev_delta_lbl)
+
+        t2_layout.addWidget(prev_frame)
+
+        warn = QLabel(
+            "⚠  Operações de ajuste são adicionadas ao histórico e não apagam "
+            "lançamentos anteriores. Para registro de compra/venda real, use "
+            "\"Registrar Operação\"."
+        )
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color: #6B7080; font-size: 10px;")
+        t2_layout.addWidget(warn)
 
         t2_layout.addStretch()
-        tabs.addTab(tab2, "Posição na Carteira")
+        tabs.addTab(tab2, "Ajuste de Posição")
 
         outer.addWidget(tabs)
 
@@ -825,29 +879,70 @@ class EditAssetDialog(NewAssetDialog):
 
         self._on_type_changed(self._type_combo.currentText())
 
-    def _recalc_from_history(self) -> None:
+    def _load_current_position(self) -> None:
+        """Carrega a posição atual via API e atualiza os labels do painel."""
         if not self._edit_client:
             return
         try:
             pos = self._edit_client.get_asset_position(self._asset_id)
-            qty = float(pos.get("net_quantity", 0))
-            avg = float(pos.get("avg_price", 0))
-            self._pos_qty.setValue(qty)
-            self._pos_avg_price.setValue(avg)
+            self._current_qty = float(pos.get("net_quantity", 0))
+            self._current_avg = float(pos.get("avg_price", 0))
+            cur_cost = self._current_qty * self._current_avg
+
+            self._cur_qty_lbl.setText(
+                f"Quantidade: {_fmt_qty(self._current_qty)}    •    "
+                f"Preço Médio: {_fmt_brl(self._current_avg)}"
+            )
+            self._cur_cost_lbl.setText(f"Custo Total: {_fmt_brl(cur_cost)}")
+
+            # Pré-preenche o formulário com os valores atuais
+            self._pos_qty.setValue(self._current_qty)
+            self._pos_avg_price.setValue(self._current_avg)
+            self._update_preview()
         except Exception:
-            pass
+            self._cur_qty_lbl.setText("Não foi possível carregar a posição atual.")
+
+    def _update_preview(self) -> None:
+        """Recalcula o painel de preview toda vez que qty ou avg mudam."""
+        new_qty = self._pos_qty.value()
+        new_avg = self._pos_avg_price.value()
+        new_cost = new_qty * new_avg
+
+        self._prev_main_lbl.setText(
+            f"➜  {_fmt_qty(new_qty)} cotas  @  {_fmt_brl(new_avg)}  =  {_fmt_brl(new_cost)}"
+        )
+
+        delta_qty = new_qty - self._current_qty
+        sign = "+" if delta_qty >= 0 else ""
+        cur_cost = self._current_qty * self._current_avg
+        delta_cost = new_cost - cur_cost
+
+        self._prev_delta_lbl.setText(
+            f"Δ Qtd: {sign}{_fmt_qty(delta_qty)}  •  Δ Custo: {'+' if delta_cost >= 0 else ''}{_fmt_brl(delta_cost)}"
+        )
 
     def get_position_data(self) -> dict[str, Any] | None:
-        """Retorna dados de ajuste de posição, ou None se não foi preenchido."""
-        qty = self._pos_qty.value()
-        avg = self._pos_avg_price.value()
-        if qty == 0.0 and avg == 0.0:
+        """
+        Retorna payload para adjust-position se os valores divergem da posição
+        atual carregada. Retorna None se não há alteração significativa.
+        """
+        new_qty = self._pos_qty.value()
+        new_avg = self._pos_avg_price.value()
+
+        # Considera mudança significativa se diferir em mais de 0.000001
+        qty_changed = abs(new_qty - self._current_qty) > 1e-6
+        avg_changed = abs(new_avg - self._current_avg) > 1e-4
+
+        if not qty_changed and not avg_changed:
             return None
+
         qd = self._pos_date.date()
+        reason = self._pos_reason.currentText()
         return {
-            "quantity": qty,
-            "avg_price": avg,
-            "date": date(qd.year(), qd.month(), qd.day()),
+            "target_quantity": f"{new_qty:.6f}",
+            "target_avg_price": f"{new_avg:.4f}",
+            "op_date": date(qd.year(), qd.month(), qd.day()).isoformat(),
+            "reason": reason,
         }
 
     def _prefill(self, asset: dict[str, Any]) -> None:
@@ -887,6 +982,9 @@ class EditAssetDialog(NewAssetDialog):
         self._emergency_fund_cb.setChecked(bool(asset.get("is_emergency_fund", False)))
         target = asset.get("target_allocation_pct")
         self._target_alloc.setValue(float(target) if target else 0.0)
+
+        # Auto-carrega a posição atual após preencher os dados cadastrais
+        self._load_current_position()
 
 
 # ======================================================================
@@ -1348,6 +1446,323 @@ class DiversificationCanvas(FigureCanvasQTAgg):
         self._fig.canvas.draw_idle()
 
 
+# ======================================================================
+# Metadados de categorias — ordem, rótulo e cor de cada tipo de ativo
+# ======================================================================
+
+_CATEGORY_META: dict[str, dict] = {
+    "acao":               {"label": "Ações B3",       "color": "#00C896"},
+    "fii":                {"label": "FIIs",            "color": "#4A9EFF"},
+    "etf":                {"label": "ETFs",            "color": "#9B59B6"},
+    "tesouro_direto":     {"label": "Tesouro Direto",  "color": "#F39C12"},
+    "renda_fixa":         {"label": "Renda Fixa",      "color": "#1ABC9C"},
+    "criptomoeda":        {"label": "Criptomoedas",    "color": "#E67E22"},
+    "acao_internacional": {"label": "Internacional",   "color": "#3498DB"},
+    "previdencia":        {"label": "Previdência",     "color": "#9B6DFF"},
+    "outros":             {"label": "Outros",          "color": "#95A5A6"},
+}
+
+_CATEGORY_ORDER = [
+    "acao", "fii", "etf", "tesouro_direto",
+    "renda_fixa", "criptomoeda", "acao_internacional",
+    "previdencia", "outros",
+]
+
+_ROW_H    = 60   # altura de cada linha da tabela
+_HEADER_H = 40   # altura do cabeçalho da tabela
+
+
+def _colored_label(text: str, color: str, size: str = "12px") -> QLabel:
+    """Cria um QLabel com cor e tamanho de fonte específicos."""
+    lbl = QLabel(text)
+    lbl.setStyleSheet(f"color: {color}; font-size: {size}; background: transparent;")
+    return lbl
+
+
+# ======================================================================
+# Etapas 1, 3 e 5 — Seção de ativos por categoria
+# ======================================================================
+
+class AssetCategorySection(QWidget):
+    """
+    Widget de seção para uma categoria de ativos (ex: Ações B3, FIIs).
+
+    Etapa 1: tabela de 9 colunas com ativos da categoria.
+    Etapa 3: cabeçalho visual com border-left colorida e 3 linhas de info.
+    Etapa 5: sem scrollbars internos — altura fixa proporcional às linhas.
+
+    Sinais:
+      edit_requested(asset_id)          → abre diálogo de edição
+      delete_requested(asset_id, ticker) → confirma exclusão
+    """
+
+    edit_requested   = pyqtSignal(int)
+    delete_requested = pyqtSignal(int, str)
+
+    def __init__(
+        self,
+        asset_type: str,
+        positions: list[dict],
+        parent: "QWidget | None" = None,
+    ) -> None:
+        super().__init__(parent)
+        meta = _CATEGORY_META.get(asset_type, {"label": asset_type, "color": "#95A5A6"})
+        self._color     = meta["color"]
+        self._label     = meta["label"]
+        self._positions = sorted(
+            positions,
+            key=lambda p: float(p.get("estimated_cost", 0)),
+            reverse=True,
+        )
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # Construção
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 8)
+        layout.setSpacing(4)
+        layout.addWidget(self._build_header())
+        layout.addWidget(self._build_table())
+
+    # ------------------------------------------------------------------
+    # Etapa 3 — cabeçalho destacado com border-left
+    # ------------------------------------------------------------------
+
+    def _build_header(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("categoryHeader")
+        frame.setStyleSheet(f"""
+            QFrame#categoryHeader {{
+                background: #222640;
+                border-left: 4px solid {self._color};
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
+            }}
+        """)
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(4)
+
+        # Linha 1: ● Categoria (bold 13px) + nº ativos (cinza)
+        row1 = QHBoxLayout()
+        name_lbl = QLabel(f"● {self._label}")
+        name_lbl.setStyleSheet(
+            f"color: {self._color}; font-size: 13px; font-weight: 700; background: transparent;"
+        )
+        n = len(self._positions)
+        n_lbl = QLabel(f"{n} ativo{'s' if n != 1 else ''}")
+        n_lbl.setStyleSheet("color: #8B90A7; font-size: 11px; background: transparent;")
+        row1.addWidget(name_lbl)
+        row1.addStretch()
+        row1.addWidget(n_lbl)
+        lay.addLayout(row1)
+
+        # Linha 2: valor investido
+        total_cost = sum(float(p.get("estimated_cost", 0)) for p in self._positions)
+        lay.addWidget(_colored_label(f"{_fmt_brl(total_cost)} investidos", "#C8CAD8", "12px"))
+
+        # Linha 3: rentabilidade total + variação do dia
+        total_cur = sum(
+            float(p.get("current_value", p.get("estimated_cost", 0)))
+            for p in self._positions
+        )
+        rent_pct  = (total_cur - total_cost) / total_cost * 100 if total_cost > 0 else 0.0
+        day_pcts  = [float(p["day_change_pct"]) for p in self._positions
+                     if p.get("day_change_pct") is not None]
+        avg_day   = sum(day_pcts) / len(day_pcts) if day_pcts else 0.0
+
+        r_col = "#00C896" if rent_pct >= 0 else "#FF6B6B"
+        d_col = "#00C896" if avg_day  >= 0 else "#FF6B6B"
+
+        row3 = QHBoxLayout()
+        row3.addWidget(_colored_label(f"Rentab.: {rent_pct:+.1f}%", r_col, "11px"))
+        row3.addWidget(_colored_label("  •  ", "#8B90A7", "11px"))
+        row3.addWidget(_colored_label(f"Hoje: {avg_day:+.2f}%", d_col, "11px"))
+        row3.addStretch()
+        lay.addLayout(row3)
+
+        return frame
+
+    # ------------------------------------------------------------------
+    # Etapas 1 e 5 — tabela sem scroll interno
+    # ------------------------------------------------------------------
+
+    def _build_table(self) -> QTableWidget:
+        headers = [
+            "Ticker / Nome", "Quantidade", "Preço Médio",
+            "Cotação Atual", "Valor Investido", "Valor Atual",
+            "Rentab. %", "Variação Dia %", "Ações",
+        ]
+        n = len(self._positions)
+        table = QTableWidget(n, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(_ROW_H)
+
+        # Etapa 5: sem scrollbars internos
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        hdr = table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col, w in [(1, 100), (2, 120), (3, 120), (4, 130), (5, 130), (6, 110), (7, 110), (8, 90)]:
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            table.setColumnWidth(col, w)
+
+        # Altura fixa: sem scroll vertical
+        table.setFixedHeight(_HEADER_H + _ROW_H * max(n, 1))
+
+        self._populate(table)
+        return table
+
+    def _populate(self, table: QTableWidget) -> None:
+        for row, pos in enumerate(self._positions):
+            ticker     = pos.get("ticker") or "—"
+            atype      = pos.get("asset_type", "")
+            net_qty    = float(pos.get("net_quantity", 0))
+            avg_price  = float(pos.get("avg_price", 0))
+            cost       = float(pos.get("estimated_cost", 0))
+            cur_price  = float(pos.get("current_price",  0))
+            cur_value  = float(pos.get("current_value",  cost))
+            asset_id   = pos.get("asset_id", pos.get("id"))
+
+            rent_pct   = (cur_value - cost) / cost * 100 if cost > 0 else 0.0
+            r_col      = "#00C896" if rent_pct >= 0 else "#FF6B6B"
+
+            day_raw    = pos.get("day_change_pct")
+            day_pct    = float(day_raw) if day_raw is not None else None
+            day_text   = f"{day_pct:+.2f}%" if day_pct is not None else "—"
+            d_col      = "#00C896" if (day_pct or 0) >= 0 else "#FF6B6B"
+
+            # Col 0: logo circular + ticker + nome
+            logo_cell = QWidget(table)
+            ll = QHBoxLayout(logo_cell)
+            ll.setContentsMargins(8, 6, 4, 6)
+            ll.setSpacing(8)
+            ll.addWidget(TickerLogoWidget(ticker, atype, size=40),
+                         alignment=Qt.AlignmentFlag.AlignVCenter)
+            tc = QWidget()
+            tc_lay = QVBoxLayout(tc)
+            tc_lay.setContentsMargins(0, 0, 0, 0)
+            tc_lay.setSpacing(2)
+            t_lbl = QLabel(ticker)
+            t_lbl.setStyleSheet(f"color: {self._color}; font-size: 12px; font-weight: 700;")
+            n_lbl = QLabel((pos.get("name", "") or "")[:24])
+            n_lbl.setStyleSheet("color: #8B90A7; font-size: 10px;")
+            tc_lay.addWidget(t_lbl)
+            tc_lay.addWidget(n_lbl)
+            ll.addWidget(tc, stretch=1)
+            table.setCellWidget(row, 0, logo_cell)
+
+            def _it(text: str, color: str = "#C8CAD8", right: bool = False) -> QTableWidgetItem:
+                it = QTableWidgetItem(text)
+                it.setForeground(QColor(color))
+                if right:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                return it
+
+            v_col = "#00C896" if cur_value > cost else ("#FF6B6B" if cur_value < cost else "#C8CAD8")
+
+            table.setItem(row, 1, _it(_fmt_qty(net_qty), right=True))
+            table.setItem(row, 2, _it(_fmt_brl(avg_price), right=True))
+            table.setItem(row, 3, _it(_fmt_brl(cur_price) if cur_price > 0 else "—", right=True))
+            table.setItem(row, 4, _it(_fmt_brl(cost), "#00C896" if cost > 0 else "#8B90A7", right=True))
+            table.setItem(row, 5, _it(_fmt_brl(cur_value), v_col, right=True))
+            table.setItem(row, 6, _it(f"{rent_pct:+.2f}%", r_col, right=True))
+            table.setItem(row, 7, _it(day_text, d_col, right=True))
+
+            # Col 8: editar + excluir
+            cw = QWidget(table)
+            cl = QHBoxLayout(cw)
+            cl.setContentsMargins(4, 4, 4, 4)
+            cl.setSpacing(4)
+            cl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            eb = QPushButton()
+            eb.setIcon(_svg_icon("edit", _LIGHT, 14))
+            eb.setFixedSize(36, 36)
+            eb.setToolTip("Editar ativo")
+            eb.clicked.connect(lambda _, aid=asset_id: self.edit_requested.emit(aid))
+            cl.addWidget(eb)
+
+            db = QPushButton()
+            db.setIcon(_svg_icon("delete", _RED, 14))
+            db.setFixedSize(36, 36)
+            db.setToolTip("Excluir ativo")
+            db.clicked.connect(lambda _, aid=asset_id, t=ticker: self.delete_requested.emit(aid, t))
+            cl.addWidget(db)
+
+            table.setCellWidget(row, 8, cw)
+
+
+# ======================================================================
+# Etapa 4 — Rodapé consolidado
+# ======================================================================
+
+class _ConsolidatedFooter(QFrame):
+    """
+    Rodapé com totais consolidados de toda a carteira.
+
+    ┌─────────────────────────────────────────┐
+    │ TOTAL DA CARTEIRA                       │
+    │ Investido: R$ X.XXX | Atual: R$ X.XXX  │
+    │ Rentab. Total: +X,X% | Hoje: +X,X%     │
+    └─────────────────────────────────────────┘
+    """
+
+    def __init__(self, positions: list[dict], parent: "QWidget | None" = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("consolidatedFooter")
+        self.setStyleSheet("""
+            QFrame#consolidatedFooter {
+                background: #222640;
+                border-top: 2px solid #2E3250;
+                border-radius: 8px;
+            }
+        """)
+
+        total_cost = sum(float(p.get("estimated_cost", 0)) for p in positions)
+        total_cur  = sum(float(p.get("current_value", p.get("estimated_cost", 0))) for p in positions)
+        rent_pct   = (total_cur - total_cost) / total_cost * 100 if total_cost > 0 else 0.0
+        day_pcts   = [float(p["day_change_pct"]) for p in positions
+                      if p.get("day_change_pct") is not None]
+        avg_day    = sum(day_pcts) / len(day_pcts) if day_pcts else 0.0
+
+        r_col = "#00C896" if rent_pct >= 0 else "#FF6B6B"
+        d_col = "#00C896" if avg_day  >= 0 else "#FF6B6B"
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 16, 24, 16)
+        lay.setSpacing(6)
+
+        title = QLabel("TOTAL DA CARTEIRA")
+        title.setStyleSheet(
+            "color: #8B90A7; font-size: 11px; font-weight: 700;"
+            " letter-spacing: 1px; background: transparent;"
+        )
+        lay.addWidget(title)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(_colored_label(f"Investido: {_fmt_brl(total_cost)}", "#C8CAD8"))
+        row2.addWidget(_colored_label("  |  ", "#3A3D50"))
+        row2.addWidget(_colored_label(f"Atual: {_fmt_brl(total_cur)}", "#E8EAED", "14px"))
+        row2.addStretch()
+        lay.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(_colored_label(f"Rentab. Total: {rent_pct:+.2f}%", r_col))
+        row3.addWidget(_colored_label("  |  ", "#3A3D50"))
+        row3.addWidget(_colored_label(f"Hoje: {avg_day:+.2f}%", d_col))
+        row3.addStretch()
+        lay.addLayout(row3)
+
+
 class InvestmentsPage(QWidget):
     """
     Página completa de investimentos: resumo, tabela de posições e liquidez.
@@ -1427,34 +1842,35 @@ class InvestmentsPage(QWidget):
         outer.addWidget(scroll)
 
     def _build_portfolio_tab(self) -> QWidget:
-        """Aba com tabela de posições e breakdown de liquidez."""
+        """
+        Aba Carteira — toolbar + seções por categoria (Etapa 2).
+
+        O scroll é feito pelo QScrollArea externo que envolve a página inteira.
+        As tabelas de categoria têm altura fixa (sem scroll interno — Etapa 5).
+        """
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(16)
 
-        # Toolbar de ações
+        # Toolbar
         layout.addLayout(self._build_toolbar())
 
-        # Loading
+        # Loading label
         self._loading_label = QLabel("Carregando carteira…")
         self._loading_label.setObjectName("loadingLabel")
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._loading_label)
 
-        # Título da tabela
-        table_title = QLabel("Posições na Carteira")
-        table_title.setObjectName("sectionTitle")
-        table_title.setVisible(False)
-        self._table_title = table_title
-        layout.addWidget(table_title)
+        # Container principal: seções de categoria + footer (Etapas 1-4)
+        self._portfolio_content = QWidget()
+        self._portfolio_content_layout = QVBoxLayout(self._portfolio_content)
+        self._portfolio_content_layout.setContentsMargins(0, 0, 0, 0)
+        self._portfolio_content_layout.setSpacing(16)
+        self._portfolio_content.setVisible(False)
+        layout.addWidget(self._portfolio_content)
 
-        # Tabela de ativos
-        self._table = self._build_table()
-        self._table.setVisible(False)
-        layout.addWidget(self._table)
-
-        # Seção de liquidez
+        # Seção de liquidez (abaixo das categorias)
         self._liquidity_section = self._build_liquidity_section()
         self._liquidity_section.setVisible(False)
         layout.addWidget(self._liquidity_section)
@@ -1564,40 +1980,6 @@ class InvestmentsPage(QWidget):
 
         return bar
 
-    def _build_table(self) -> QTableWidget:
-        headers = ["Ticker", "Nome", "Tipo", "Quantidade", "Preço Médio", "Valor Investido", "Ações"]
-        table = QTableWidget(0, len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setAlternatingRowColors(True)
-        table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(56)  # altura para logo 40px + margem
-
-        header = table.horizontalHeader()
-        # Ticker (logo + texto): fixo 180px
-        header.setSectionResizeMode(_COL_TICKER,  QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_TICKER, 180)
-        # Nome: estica para preencher o restante
-        header.setSectionResizeMode(_COL_NAME,    QHeaderView.ResizeMode.Stretch)
-        # Tipo: fixo 80px
-        header.setSectionResizeMode(_COL_TYPE,    QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_TYPE, 80)
-        # Quantidade: fixo 90px
-        header.setSectionResizeMode(_COL_QTY,     QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_QTY, 90)
-        # Preço Médio: fixo 110px
-        header.setSectionResizeMode(_COL_AVG,     QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_AVG, 110)
-        # Valor Investido: fixo 120px
-        header.setSectionResizeMode(_COL_COST,    QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_COST, 120)
-        # Ações: fixo 90px (dois botões 36×36 + gap)
-        header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_ACTIONS, 90)
-
-        return table
-
     def _build_liquidity_section(self) -> QWidget:
         """
         Seção de breakdown de liquidez D+0, D+1, D+2, vencimento.
@@ -1696,8 +2078,9 @@ class InvestmentsPage(QWidget):
         else:
             self._card_distribution.set_value("—")
 
-        # Tabela de posições
-        self._populate_table(positions)
+        # Seções por categoria (Etapas 1-4)
+        self._populate_categories(positions)
+        self._portfolio_content.setVisible(True)
 
         # Breakdown de liquidez
         self._populate_liquidity(liquidity, total)
@@ -1713,91 +2096,54 @@ class InvestmentsPage(QWidget):
     def _set_content_visible(self, visible: bool) -> None:
         for card in [self._card_total, self._card_assets, self._card_distribution]:
             card.setVisible(visible)
-        self._table.setVisible(visible)
-        self._table_title.setVisible(visible)
+        self._portfolio_content.setVisible(visible)
         self._liquidity_section.setVisible(visible)
 
-    def _populate_table(self, positions: list[dict]) -> None:
-        # Ordena por valor investido decrescente para mostrar posições maiores primeiro
-        positions_sorted = sorted(
-            positions, key=lambda p: float(p.get("estimated_cost", 0)), reverse=True
-        )
-        self._table.setRowCount(len(positions_sorted))
 
-        for row, pos in enumerate(positions_sorted):
-            net_qty = float(pos.get("net_quantity", 0))
-            avg_price = float(pos.get("avg_price", 0))
-            cost = float(pos.get("estimated_cost", 0))
-            asset_type = pos.get("asset_type", "")
-            ticker = pos.get("ticker") or "—"
 
-            # ── Coluna 0: logo circular (40px) + ticker bold + nome curto ──
-            logo_cell = QWidget(self._table)
-            logo_lay  = QHBoxLayout(logo_cell)
-            logo_lay.setContentsMargins(8, 6, 4, 6)
-            logo_lay.setSpacing(8)
+    def _populate_categories(self, positions: list[dict]) -> None:
+        """
+        Etapas 1-4: limpa o container e recria uma AssetCategorySection
+        para cada tipo de ativo presente, seguido do rodapé consolidado.
+        """
+        # Limpa seções anteriores
+        while self._portfolio_content_layout.count():
+            item = self._portfolio_content_layout.takeAt(0)
+            if w := item.widget():
+                w.deleteLater()
 
-            logo_widget = TickerLogoWidget(ticker, asset_type, size=40)
-            logo_lay.addWidget(logo_widget, alignment=Qt.AlignmentFlag.AlignVCenter)
+        if not positions:
+            empty = QLabel("Nenhum ativo cadastrado. Clique em '+ Adicionar Ativo' para começar.")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty.setStyleSheet("color: #8B90A7; font-size: 13px; padding: 40px;")
+            self._portfolio_content_layout.addWidget(empty)
+            return
 
-            text_col = QWidget()
-            text_lay = QVBoxLayout(text_col)
-            text_lay.setContentsMargins(0, 0, 0, 0)
-            text_lay.setSpacing(2)
-            ticker_lbl = QLabel(ticker)
-            ticker_lbl.setStyleSheet(
-                f"color: {_BLUE}; font-size: 12px; font-weight: 700;"
-            )
-            name_short = (pos.get("name", "") or "")[:20]
-            name_lbl = QLabel(name_short)
-            name_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 10px;")
-            text_lay.addWidget(ticker_lbl)
-            text_lay.addWidget(name_lbl)
-            logo_lay.addWidget(text_col, stretch=1)
+        # Agrupa por tipo
+        by_type: dict[str, list[dict]] = {}
+        for pos in positions:
+            atype = pos.get("asset_type", "outros")
+            by_type.setdefault(atype, []).append(pos)
 
-            self._table.setCellWidget(row, _COL_TICKER, logo_cell)
+        # Adiciona seções na ordem preferida
+        for atype in _CATEGORY_ORDER:
+            if atype not in by_type:
+                continue
+            section = AssetCategorySection(atype, by_type[atype])
+            section.edit_requested.connect(self._open_edit_asset_dialog)
+            section.delete_requested.connect(self._confirm_delete_asset)
+            self._portfolio_content_layout.addWidget(section)
 
-            # ── Colunas 1-5: dados textuais ─────────────────────────────
-            text_cells = [
-                (pos.get("name", ""), _WHITE),
-                (_ASSET_TYPE_DISPLAY.get(asset_type, asset_type), _MUTED),
-                (_fmt_qty(net_qty), _WHITE),
-                (_fmt_brl(avg_price), _WHITE),
-                (_fmt_brl(cost), _GREEN if cost > 0 else _MUTED),
-            ]
+        # Tipos fora da ordem padrão (ex: novos tipos adicionados no futuro)
+        for atype, pos_list in by_type.items():
+            if atype not in _CATEGORY_ORDER:
+                section = AssetCategorySection(atype, pos_list)
+                section.edit_requested.connect(self._open_edit_asset_dialog)
+                section.delete_requested.connect(self._confirm_delete_asset)
+                self._portfolio_content_layout.addWidget(section)
 
-            for col_offset, (text, color) in enumerate(text_cells):
-                col = col_offset + 1   # _COL_NAME starts at 1
-                item = QTableWidgetItem(text)
-                item.setForeground(QColor(color))
-                if col in (_COL_QTY, _COL_AVG, _COL_COST):
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                    )
-                self._table.setItem(row, col, item)
-
-            asset_id = pos["asset_id"]
-            cell_w = QWidget(self._table)
-            cell_lay = QHBoxLayout(cell_w)
-            cell_lay.setContentsMargins(4, 4, 4, 4)
-            cell_lay.setSpacing(4)
-            cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            edit_btn = QPushButton()
-            edit_btn.setIcon(_svg_icon("edit", _LIGHT, 14))
-            edit_btn.setFixedSize(36, 36)
-            edit_btn.setToolTip("Editar ativo")
-            edit_btn.clicked.connect(lambda _, aid=asset_id: self._open_edit_asset_dialog(aid))
-            cell_lay.addWidget(edit_btn)
-
-            del_btn = QPushButton()
-            del_btn.setIcon(_svg_icon("delete", _RED, 14))
-            del_btn.setFixedSize(36, 36)
-            del_btn.setToolTip("Excluir ativo")
-            del_btn.clicked.connect(lambda _, aid=asset_id, t=ticker: self._confirm_delete_asset(aid, t))
-            cell_lay.addWidget(del_btn)
-
-            self._table.setCellWidget(row, _COL_ACTIONS, cell_w)
+        # Rodapé consolidado (Etapa 4)
+        self._portfolio_content_layout.addWidget(_ConsolidatedFooter(positions))
 
     def _populate_liquidity(self, liquidity: dict, total_portfolio: float) -> None:
         d0 = float(liquidity.get("d0_value", 0))
@@ -1858,22 +2204,16 @@ class InvestmentsPage(QWidget):
             )
             self._update_worker.start()
 
-        # 2. Ajusta posição se a aba 2 foi preenchida
+        # 2. Ajusta posição se os valores da aba 2 divergem da posição atual
         pos_data = dialog.get_position_data()
         if pos_data:
-            pos_worker = PositionAdjustWorker(
-                self._client,
-                asset_id,
-                pos_data["quantity"],
-                pos_data["avg_price"],
-                pos_data["date"],
-            )
-            pos_worker.done.connect(lambda: self.load_data())
+            pos_worker = AdjustPositionWorker(self._client, asset_id, pos_data)
+            pos_worker.done.connect(lambda _result: self.load_data())
             pos_worker.error_occurred.connect(
                 lambda msg: QMessageBox.critical(self, "Erro ao ajustar posição", msg)
             )
             pos_worker.start()
-            self._pos_workers = getattr(self, "_pos_workers", [])
+            self._pos_workers: list = getattr(self, "_pos_workers", [])
             self._pos_workers.append(pos_worker)
 
     def _open_add_asset_dialog(self) -> None:

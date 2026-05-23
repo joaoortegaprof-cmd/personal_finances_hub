@@ -23,9 +23,11 @@ from backend.api.schemas.assets import (
     LiquidityBreakdownOut,
     PortfolioSummaryOut,
     PortfolioTypeEntryOut,
+    PositionAdjustIn,
+    PositionAdjustOut,
 )
 from backend.core.database import get_db
-from backend.models.asset import Asset, AssetPosition
+from backend.models.asset import Asset, AssetPosition, OperationType
 from backend.repositories.asset_repository import AssetRepository
 from backend.services.liquidity_service import LiquidityService
 from backend.services.risk_service import RiskService
@@ -114,6 +116,83 @@ async def register_operation(
     await db.flush()
     await db.refresh(position)
     return position
+
+
+@assets_router.post(
+    "/{asset_id}/adjust-position",
+    response_model=PositionAdjustOut,
+    status_code=status.HTTP_200_OK,
+)
+async def adjust_asset_position(
+    asset_id: int,
+    payload: PositionAdjustIn,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Ajusta a posição líquida de um ativo diretamente.
+
+    Dentro de uma única transação atômica:
+      1. Cria uma operação SELL com quantity negativa igual à posição atual,
+         zerando completamente o saldo anterior.
+      2. Cria uma operação BUY com a quantidade e preço médio alvo.
+
+    Isso preserva o histórico completo de operações e garante que
+    ``get_consolidated_position`` e ``calculate_avg_price`` retornem os
+    valores exatos informados após o ajuste.
+    """
+    repo = AssetRepository(db)
+    asset = await repo.get_by_id(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ativo não encontrado")
+
+    current_qty = await repo.get_consolidated_position(asset_id)
+    current_avg = await repo.calculate_avg_price(asset_id)
+
+    note = f"[AJUSTE] {payload.reason}" if payload.reason else "[AJUSTE MANUAL DE POSIÇÃO]"
+    ops_created = 0
+
+    # --- Passo 1: zera a posição atual com um SELL de quantidade negativa ---
+    if current_qty != Decimal("0"):
+        sell = AssetPosition(
+            asset_id=asset_id,
+            operation_date=payload.op_date,
+            # Quantidade NEGATIVA: cancela exatamente a posição líquida atual.
+            # Como get_consolidated_position = SUM(quantity), inserir -current_qty
+            # leva o saldo a zero antes de criar a nova posição.
+            quantity=-current_qty,
+            unit_price=current_avg if current_avg > Decimal("0") else Decimal("0.01"),
+            fees=Decimal("0.00"),
+            operation_type=OperationType.SELL,
+            notes=note,
+        )
+        db.add(sell)
+        ops_created += 1
+
+    # --- Passo 2: cria a nova posição alvo ---
+    if payload.target_quantity > Decimal("0"):
+        buy = AssetPosition(
+            asset_id=asset_id,
+            operation_date=payload.op_date,
+            quantity=payload.target_quantity,
+            unit_price=payload.target_avg_price,
+            fees=Decimal("0.00"),
+            operation_type=OperationType.BUY,
+            notes=note,
+        )
+        db.add(buy)
+        ops_created += 1
+
+    await db.flush()
+
+    return PositionAdjustOut(
+        asset_id=asset_id,
+        ticker=asset.ticker,
+        previous_quantity=current_qty,
+        previous_avg_price=current_avg,
+        new_quantity=payload.target_quantity,
+        new_avg_price=payload.target_avg_price,
+        operations_created=ops_created,
+    )
 
 
 # -----------------------------------------------------------------

@@ -81,20 +81,29 @@ class AssetRepository(BaseRepository[Asset]):
 
     async def calculate_avg_price(self, asset_id: int) -> Decimal:
         """
-        Calcula o preço médio de aquisição do ativo (aproximação CMP):
+        Calcula o preço médio de aquisição do ativo (CMP aproximado).
 
-            preço_médio = custo_total_compras / quantidade_total_comprada
+        Comportamento pós-ajuste manual:
+          Se o ativo passou por um ajuste via POST /adjust-position, esse
+          endpoint insere um SELL marcado com "[AJUSTE]" no campo notes.
+          Nesse caso, apenas as operações de BUY registradas APÓS o último
+          SELL de ajuste são consideradas — o que garante que o preço médio
+          retornado corresponda exatamente ao valor informado no ajuste mais
+          recente (mais eventuais compras realizadas depois).
 
-        Onde custo_total_compras = SUM(quantity * unit_price + fees)
-        apenas para operações de BUY.
-
-        Limitação: ignora o efeito das vendas no custo médio.
-        O CMP exato requer cálculo iterativo em ordem cronológica —
-        responsabilidade da camada de serviços.
-
-        Retorna 0 se não houver operações de compra.
+        Retorna 0 se não houver operações de compra relevantes.
         """
-        # Agrega custo total e quantidade apenas das compras
+        # Descobre o ID do SELL de ajuste mais recente (se houver)
+        adj_sell_result = await self._session.execute(
+            select(func.max(AssetPosition.id)).where(
+                AssetPosition.asset_id == asset_id,
+                AssetPosition.operation_type == OperationType.SELL,
+                AssetPosition.notes.like("[AJUSTE]%"),
+            )
+        )
+        last_adj_sell_id: int = adj_sell_result.scalar_one() or 0
+
+        # Agrega custo e quantidade apenas das compras após o último ajuste
         result = await self._session.execute(
             select(
                 func.coalesce(
@@ -108,6 +117,7 @@ class AssetRepository(BaseRepository[Asset]):
             ).where(
                 AssetPosition.asset_id == asset_id,
                 AssetPosition.operation_type == OperationType.BUY,
+                AssetPosition.id > last_adj_sell_id,
             )
         )
         row = result.one()
