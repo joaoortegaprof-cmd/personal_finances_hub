@@ -339,6 +339,82 @@ class CashflowService:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    # -----------------------------------------------------------------
+    # Resumo de gastos recorrentes (novo endpoint GET /cashflow/recurring)
+    # -----------------------------------------------------------------
+
+    async def get_recurring_summary(self) -> dict:
+        """
+        Resumo consolidado de todos os gastos recorrentes ativos.
+
+        Retorna:
+          items         → lista de cada recorrente com próximo vencimento
+          monthly_total → soma dos valores mensalizados (anual/12, semanal×4.33…)
+          weekly_total  → soma dos valores semanalizados
+          annual_total  → soma dos valores anualizados
+          by_category   → total mensal agrupado por categoria
+          count         → número de recorrentes ativos
+        """
+        from backend.models.recurring import Periodicity
+
+        # Fatores de conversão para mensalização
+        _MONTHLY_FACTOR: dict[Periodicity, float] = {
+            Periodicity.WEEKLY:     4.333,
+            Periodicity.BIWEEKLY:   2.167,
+            Periodicity.MONTHLY:    1.0,
+            Periodicity.BIMONTHLY:  0.5,
+            Periodicity.QUARTERLY:  1 / 3,
+            Periodicity.SEMIANNUAL: 1 / 6,
+            Periodicity.ANNUAL:     1 / 12,
+        }
+
+        items = await self._get_active_recurring()
+        today = date.today()
+
+        result_items = []
+        monthly_total = Decimal("0")
+        by_category: dict[str, Decimal] = {}
+
+        for exp in items:
+            # Próximo vencimento efetivo
+            d = exp.next_due_date
+            while d < today:
+                d = _advance_date(d, exp.periodicity)
+
+            monthly_equiv = (
+                Decimal(str(_MONTHLY_FACTOR.get(exp.periodicity, 1.0))) * exp.amount
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            monthly_total += monthly_equiv
+            cat = str(exp.category)
+            by_category[cat] = by_category.get(cat, Decimal("0")) + monthly_equiv
+
+            result_items.append({
+                "id":               exp.id,
+                "name":             exp.name,
+                "amount":           float(exp.amount),
+                "category":         cat,
+                "periodicity":      exp.periodicity,
+                "next_due_date":    d.isoformat(),
+                "days_until_due":   (d - today).days,
+                "monthly_equiv":    float(monthly_equiv),
+            })
+
+        # Ordena por próximo vencimento
+        result_items.sort(key=lambda x: x["next_due_date"])
+
+        annual_total = (monthly_total * 12).quantize(Decimal("0.01"))
+        weekly_total = (monthly_total / Decimal("4.333")).quantize(Decimal("0.01"))
+
+        return {
+            "count":         len(result_items),
+            "monthly_total": float(monthly_total),
+            "weekly_total":  float(weekly_total),
+            "annual_total":  float(annual_total),
+            "by_category":   {k: float(v) for k, v in by_category.items()},
+            "items":         result_items,
+        }
+
     async def _get_upcoming_invoices(self, end_date: date) -> list[CreditCardInvoice]:
         today = date.today()
         stmt  = (

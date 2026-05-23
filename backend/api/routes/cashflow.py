@@ -1,5 +1,8 @@
 """
-Endpoint de projeção de fluxo de caixa futuro.
+Endpoints de fluxo de caixa futuro.
+
+GET /cashflow/projection → projeção de receitas/despesas nos próximos N meses
+GET /cashflow/recurring  → resumo consolidado de todos os gastos recorrentes
 """
 
 from fastapi import APIRouter, Depends
@@ -32,3 +35,17 @@ async def get_projection(
     months = max(1, min(months, 12))
     service = CashflowService(db)
     return await service.project(months=months, mode=mode)
+
+
+@router.get("/recurring")
+async def get_recurring_summary(db: AsyncSession = Depends(get_db)):
+    """
+    Resumo consolidado dos gastos recorrentes ativos.
+
+    Retorna:
+      - Cada recorrente com próximo vencimento e equivalente mensal
+      - Totais: semanal, mensal e anual
+      - Agrupamento por categoria
+    """
+    service = CashflowService(db)
+    return await service.get_recurring_summary()
