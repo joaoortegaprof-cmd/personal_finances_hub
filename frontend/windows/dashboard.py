@@ -733,7 +733,7 @@ class DebtProgressRow(QFrame):
         name_lbl = QLabel(f"{debt.get('name', '')}  ·  {debt.get('institution', '')}")
         name_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 12px; font-weight: 600; background: transparent;")
         rate_lbl = QLabel(f"{float(debt.get('interest_rate', 0)):.2f}% a.m.")
-        rate_lbl.setStyleSheet("color: #FF6B6B; font-size: 11px; background: transparent;")
+        rate_lbl.setStyleSheet(f"color: {_RED}; font-size: 11px; background: transparent;")
         rate_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(name_lbl)
         header.addStretch()
@@ -760,7 +760,7 @@ class DebtProgressRow(QFrame):
                 text-align: center;
             }}
             QProgressBar::chunk {{
-                background: #FF6B6B;
+                background: #FF4D4D;
                 border-radius: 4px;
             }}
         """)

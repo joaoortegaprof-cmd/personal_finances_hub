@@ -52,6 +52,12 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.colors import (
+    COLOR_ASSET   as _BAL_POS,
+    COLOR_EXPENSE as _BAL_NEG,
+    COLOR_BALANCE as _BAL_LABEL,
+    COLOR_MUTED   as _MUTED,
+)
 from frontend.components.icons import icon as _svg_icon
 from frontend.components.signals import app_signals
 
@@ -572,7 +578,7 @@ class AccountCard(QFrame):
         bank_name    = acc.get("bank_name", "")
         acc_name     = acc.get("name", "—")
         balance      = float(acc.get("_current_balance", acc.get("initial_balance", 0)))
-        bal_color    = "#00C896" if balance >= 0 else "#FF6B6B"
+        bal_color    = _BAL_POS if balance >= 0 else _BAL_NEG
 
         # Card frame styling — top accent border + subtle matching glow
         self.setObjectName("accountCard")
@@ -658,7 +664,7 @@ class AccountCard(QFrame):
 
         saldo_cap = QLabel("Saldo atual")
         saldo_cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        saldo_cap.setStyleSheet("color: #6B7080; font-size: 10px; background: transparent;")
+        saldo_cap.setStyleSheet(f"color: {_BAL_LABEL}; font-size: 10px; background: transparent;")
         main.addWidget(saldo_cap)
 
         main.addSpacing(16)

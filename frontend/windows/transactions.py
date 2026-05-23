@@ -1938,11 +1938,11 @@ class TransactionsPage(QWidget):
 
         # Cores do valor por tipo (sobre tema claro)
         _AMOUNT_COLORS = {
-            "income":     "#0E8A5F",
-            "debit":      "#C43030",
-            "credit":     "#B35A00",
-            "investment": "#1A6EC4",
-            "invoice":    "#5A5E78",
+            "income":     _GREEN,       # COLOR_ASSET — verde
+            "debit":      _RED,         # COLOR_EXPENSE — vermelho
+            "credit":     _ORANGE,      # COLOR_WARNING — laranja
+            "investment": _BLUE,        # COLOR_INVESTMENT — azul
+            "invoice":    _MUTED,       # COLOR_MUTED — cinza
         }
 
         # Fundo sutil por tipo (tema claro — tints pastel)
@@ -1956,11 +1956,11 @@ class TransactionsPage(QWidget):
 
         # Cores de ícone de categoria por tipo de transação
         _CAT_ICON_COLOR = {
-            "income":     "#0E8A5F",
-            "debit":      "#C43030",
-            "credit":     "#B35A00",
-            "investment": "#1A6EC4",
-            "invoice":    "#5A5E78",
+            "income":     _GREEN,
+            "debit":      _RED,
+            "credit":     _ORANGE,
+            "investment": _BLUE,
+            "invoice":    _MUTED,
         }
 
         # Badge de natureza/tipo (bg, fg) — sobre tema claro
