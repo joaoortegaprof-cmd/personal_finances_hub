@@ -1648,6 +1648,12 @@ class TransactionsPage(QWidget):
 
         bar.addStretch()
 
+        # Botão de importação de extrato
+        import_btn = QPushButton("↑ Importar extrato")
+        import_btn.setToolTip("Importar lançamentos de arquivo OFX ou CSV")
+        import_btn.clicked.connect(self._open_import_wizard)
+        bar.addWidget(import_btn)
+
         # Botão de ação principal
         new_btn = QPushButton(" Novo Lançamento")
         new_btn.setIcon(_svg_icon("add_circle", "#FFFFFF", 16))
@@ -2159,6 +2165,26 @@ class TransactionsPage(QWidget):
             lambda msg: QMessageBox.critical(self, "Erro ao atualizar", msg)
         )
         self._update_worker.start()
+
+    # ------------------------------------------------------------------
+    # Wizard de importação de extrato
+    # ------------------------------------------------------------------
+
+    def _open_import_wizard(self) -> None:
+        """Abre o wizard de importação de extratos OFX/CSV."""
+        from frontend.windows.import_wizard import ImportWizard  # importação lazy
+
+        if not self._accounts:
+            QMessageBox.information(
+                self,
+                "Nenhuma conta cadastrada",
+                "Cadastre ao menos uma conta em Contas antes de importar extratos.",
+            )
+            return
+
+        wizard = ImportWizard(self._client, self._accounts, parent=self)
+        wizard.import_completed.connect(self.load_data)
+        wizard.exec()
 
     # ------------------------------------------------------------------
     # Diálogo de criação

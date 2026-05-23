@@ -578,6 +578,87 @@ class ApiClient:
         return self._get("/portfolio/opportunity-cost", params={"annual_rate": annual_rate})
 
     # ------------------------------------------------------------------
+    # Importação de extratos
+    # ------------------------------------------------------------------
+
+    def preview_import_ofx(self, file_path: str, account_id: int) -> dict:
+        """
+        Envia arquivo OFX para pré-visualização.
+
+        Retorna: total, new, duplicates, possible, transactions (com status).
+        """
+        url = f"{self.base_url}/import/ofx"
+        try:
+            with open(file_path, "rb") as fh:
+                with httpx.Client(timeout=self._DEFAULT_TIMEOUT) as client:
+                    resp = client.post(
+                        url,
+                        data={"account_id": account_id},
+                        files={"file": (file_path.split("/")[-1], fh, "application/octet-stream")},
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+        except httpx.ConnectError:
+            raise ApiError("Não foi possível conectar à API.")
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.json().get("detail", str(exc))
+            raise ApiError(str(detail), status_code=exc.response.status_code)
+        except httpx.RequestError as exc:
+            raise ApiError(f"Erro de rede: {exc}")
+
+    def preview_import_csv(
+        self,
+        file_path: str,
+        account_id: int,
+        date_col: str,
+        amount_col: str,
+        desc_col: str,
+        date_format: str = "%d/%m/%Y",
+        delimiter: str = ";",
+    ) -> dict:
+        """
+        Envia CSV para pré-visualização com configuração de colunas.
+
+        Retorna: total, new, duplicates, possible, transactions (com status).
+        """
+        url = f"{self.base_url}/import/csv"
+        try:
+            with open(file_path, "rb") as fh:
+                with httpx.Client(timeout=self._DEFAULT_TIMEOUT) as client:
+                    resp = client.post(
+                        url,
+                        data={
+                            "account_id":  account_id,
+                            "date_col":    date_col,
+                            "amount_col":  amount_col,
+                            "desc_col":    desc_col,
+                            "date_format": date_format,
+                            "delimiter":   delimiter,
+                        },
+                        files={"file": (file_path.split("/")[-1], fh, "text/csv")},
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+        except httpx.ConnectError:
+            raise ApiError("Não foi possível conectar à API.")
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.json().get("detail", str(exc))
+            raise ApiError(str(detail), status_code=exc.response.status_code)
+        except httpx.RequestError as exc:
+            raise ApiError(f"Erro de rede: {exc}")
+
+    def confirm_import(self, transactions: list[dict], account_id: int) -> dict:
+        """
+        Importa transações confirmadas pelo wizard.
+
+        Retorna: imported, skipped, errors.
+        """
+        return self._post(
+            "/import/confirm",
+            {"account_id": account_id, "transactions": transactions},
+        )
+
+    # ------------------------------------------------------------------
     # Sistema
     # ------------------------------------------------------------------
 
