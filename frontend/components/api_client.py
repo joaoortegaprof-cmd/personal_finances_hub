@@ -87,6 +87,14 @@ class ApiClient:
         """
         return self._get("/dashboard")
 
+    def get_credit_score(self) -> dict:
+        """
+        Retorna o score de crédito pessoal (0–1.000) com 5 componentes:
+          - total, rating, color, pct
+          - components: list com score, max_score, weight_pct e description
+        """
+        return self._get("/credit-score")
+
     def get_alerts(
         self,
         invoice_due_days: int = 3,

@@ -133,7 +133,7 @@ class DashboardWorker(QThread):
     Emite todos de uma vez para evitar múltiplas atualizações parciais.
     """
 
-    data_ready     = pyqtSignal(dict, dict, dict, list, dict)  # dashboard, alerts, ef, debts, essential_cost
+    data_ready     = pyqtSignal(dict, dict, dict, list, dict, dict)  # dashboard, alerts, ef, debts, essential_cost, credit_score
     error_occurred = pyqtSignal(str)
 
     def __init__(self, client: ApiClient) -> None:
@@ -169,7 +169,12 @@ class DashboardWorker(QThread):
             except ApiError:
                 essential_cost = {"monthly_average": 0, "breakdown": []}
 
-            self.data_ready.emit(dashboard, alerts, emergency_fund, debts, essential_cost)
+            try:
+                credit_score = self._client.get_credit_score()
+            except ApiError:
+                credit_score = {"total": 0, "rating": "—", "color": "#8B90A7", "pct": 0}
+
+            self.data_ready.emit(dashboard, alerts, emergency_fund, debts, essential_cost, credit_score)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
@@ -1195,6 +1200,16 @@ class DashboardPage(QWidget):
             row2.addWidget(c)
         self._content_layout.addLayout(row2)
 
+        # ── Linha 3: Score de Crédito (1 card largo) ──────────────────
+        row3 = QHBoxLayout()
+        row3.setSpacing(16)
+        self._card_credit_score = SummaryCard("Score de Crédito", COLOR_PENSION, accent=COLOR_PENSION, icon_name="check")
+        self._card_credit_score.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._card_credit_score.setVisible(False)
+        row3.addWidget(self._card_credit_score)
+        row3.addStretch()
+        self._content_layout.addLayout(row3)
+
         # ── Custo Essencial — card separado abaixo da linha 2 ──────────
         self._card_essential = SummaryCard("Custo Essencial", COLOR_WARNING, accent=COLOR_WARNING, icon_name="card")
         self._card_essential.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1362,6 +1377,7 @@ class DashboardPage(QWidget):
         emergency_fund: dict,
         debts: list,
         essential_cost: dict,
+        credit_score: dict | None = None,
     ) -> None:
         self._loading_label.setVisible(False)
         self._set_content_visible(True)
@@ -1438,6 +1454,17 @@ class DashboardPage(QWidget):
             sub="Média dos últimos 3 meses",
         )
 
+        # ── Score de crédito ───────────────────────────────────────────
+        if credit_score:
+            cs_total  = int(credit_score.get("total", 0))
+            cs_rating = credit_score.get("rating", "—")
+            cs_color  = credit_score.get("color", "#8B90A7")
+            self._card_credit_score.set_value(
+                f"{cs_total} / 1000",
+                color=cs_color,
+                sub=cs_rating,
+            )
+
         # ── Dívidas ────────────────────────────────────────────────────
         self._populate_debts(debts)
 
@@ -1503,6 +1530,7 @@ class DashboardPage(QWidget):
             self._card_investimentos,
             self._card_saldo,
             self._card_essential,
+            self._card_credit_score,
         ]
 
     def _set_content_visible(self, visible: bool) -> None:

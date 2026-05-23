@@ -23,12 +23,13 @@ from fastapi.responses import JSONResponse
 from backend.api.routes.accounts import router as accounts_router
 from backend.api.routes.assets import assets_router, portfolio_router
 from backend.api.routes.cards import router as cards_router
+from backend.api.routes.cashflow import router as cashflow_router
+from backend.api.routes.credit_score import router as credit_score_router
 from backend.api.routes.dashboard import router as dashboard_router
 from backend.api.routes.debts import router as debts_router
 from backend.api.routes.dividends import router as dividends_router
 from backend.api.routes.import_routes import router as import_router
 from backend.api.routes.market import router as market_router
-from backend.api.routes.cashflow import router as cashflow_router
 from backend.api.routes.recurring import router as recurring_router
 from backend.api.routes.simulation import router as simulation_router
 from backend.api.routes.tax import router as tax_router
@@ -100,6 +101,7 @@ app.include_router(tax_router)
 app.include_router(cashflow_router)
 app.include_router(recurring_router)
 app.include_router(simulation_router)
+app.include_router(credit_score_router)
 
 
 # -----------------------------------------------------------------
