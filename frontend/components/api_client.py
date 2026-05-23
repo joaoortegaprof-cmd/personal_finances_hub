@@ -328,6 +328,10 @@ class ApiClient:
         """Atualiza um ativo existente."""
         return self._put(f"/assets/{asset_id}", payload)
 
+    def delete_asset(self, asset_id: int) -> None:
+        """Remove um ativo permanentemente."""
+        self._delete(f"/assets/{asset_id}")
+
     def create_asset_operation(self, asset_id: int, payload: dict[str, Any]) -> dict:
         """Registra compra, venda ou evento corporativo para o ativo."""
         return self._post(f"/assets/{asset_id}/operations", payload)

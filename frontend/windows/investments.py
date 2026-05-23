@@ -1572,15 +1572,29 @@ class InvestmentsPage(QWidget):
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(48)  # altura para logo 36px
+        table.verticalHeader().setDefaultSectionSize(56)  # altura para logo 40px + margem
 
         header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(_COL_TICKER, QHeaderView.ResizeMode.Fixed)
+        # Ticker (logo + texto): fixo 180px
+        header.setSectionResizeMode(_COL_TICKER,  QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_TICKER, 180)
+        # Nome: estica para preencher o restante
+        header.setSectionResizeMode(_COL_NAME,    QHeaderView.ResizeMode.Stretch)
+        # Tipo: fixo 80px
+        header.setSectionResizeMode(_COL_TYPE,    QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_TYPE, 80)
+        # Quantidade: fixo 90px
+        header.setSectionResizeMode(_COL_QTY,     QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_QTY, 90)
+        # Preço Médio: fixo 110px
+        header.setSectionResizeMode(_COL_AVG,     QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_AVG, 110)
+        # Valor Investido: fixo 120px
+        header.setSectionResizeMode(_COL_COST,    QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_COST, 120)
+        # Ações: fixo 90px (dois botões 36×36 + gap)
         header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_TICKER, 160)
-        table.setColumnWidth(_COL_ACTIONS, 40)
+        table.setColumnWidth(_COL_ACTIONS, 90)
 
         return table
 
@@ -1717,24 +1731,24 @@ class InvestmentsPage(QWidget):
             asset_type = pos.get("asset_type", "")
             ticker = pos.get("ticker") or "—"
 
-            # ── Coluna 0: logo circular + ticker bold + nome menor ──────
-            logo_cell = QWidget()
+            # ── Coluna 0: logo circular (40px) + ticker bold + nome curto ──
+            logo_cell = QWidget(self._table)
             logo_lay  = QHBoxLayout(logo_cell)
-            logo_lay.setContentsMargins(8, 4, 8, 4)
+            logo_lay.setContentsMargins(8, 6, 4, 6)
             logo_lay.setSpacing(8)
 
-            logo_widget = TickerLogoWidget(ticker, asset_type, size=36)
-            logo_lay.addWidget(logo_widget)
+            logo_widget = TickerLogoWidget(ticker, asset_type, size=40)
+            logo_lay.addWidget(logo_widget, alignment=Qt.AlignmentFlag.AlignVCenter)
 
             text_col = QWidget()
             text_lay = QVBoxLayout(text_col)
             text_lay.setContentsMargins(0, 0, 0, 0)
-            text_lay.setSpacing(1)
+            text_lay.setSpacing(2)
             ticker_lbl = QLabel(ticker)
             ticker_lbl.setStyleSheet(
                 f"color: {_BLUE}; font-size: 12px; font-weight: 700;"
             )
-            name_short = (pos.get("name", "") or "")[:22]
+            name_short = (pos.get("name", "") or "")[:20]
             name_lbl = QLabel(name_short)
             name_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 10px;")
             text_lay.addWidget(ticker_lbl)
@@ -1763,16 +1777,26 @@ class InvestmentsPage(QWidget):
                 self._table.setItem(row, col, item)
 
             asset_id = pos["asset_id"]
-            cell_w = QWidget()
+            cell_w = QWidget(self._table)
             cell_lay = QHBoxLayout(cell_w)
-            cell_lay.setContentsMargins(4, 2, 4, 2)
+            cell_lay.setContentsMargins(4, 4, 4, 4)
+            cell_lay.setSpacing(4)
             cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
             edit_btn = QPushButton()
             edit_btn.setIcon(_svg_icon("edit", _LIGHT, 14))
-            edit_btn.setFixedSize(32, 32)
+            edit_btn.setFixedSize(36, 36)
             edit_btn.setToolTip("Editar ativo")
             edit_btn.clicked.connect(lambda _, aid=asset_id: self._open_edit_asset_dialog(aid))
             cell_lay.addWidget(edit_btn)
+
+            del_btn = QPushButton()
+            del_btn.setIcon(_svg_icon("delete", _RED, 14))
+            del_btn.setFixedSize(36, 36)
+            del_btn.setToolTip("Excluir ativo")
+            del_btn.clicked.connect(lambda _, aid=asset_id, t=ticker: self._confirm_delete_asset(aid, t))
+            cell_lay.addWidget(del_btn)
+
             self._table.setCellWidget(row, _COL_ACTIONS, cell_w)
 
     def _populate_liquidity(self, liquidity: dict, total_portfolio: float) -> None:
@@ -1796,6 +1820,24 @@ class InvestmentsPage(QWidget):
     # ------------------------------------------------------------------
     # Diálogos
     # ------------------------------------------------------------------
+
+    def _confirm_delete_asset(self, asset_id: int, ticker: str) -> None:
+        """Confirma exclusão de ativo e remove se confirmado."""
+        reply = QMessageBox.question(
+            self,
+            "Excluir ativo",
+            f"Deseja realmente excluir o ativo <b>{ticker}</b>?<br>"
+            "Esta ação não pode ser desfeita.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._client.delete_asset(asset_id)
+            self.load_data()
+        except ApiError as exc:
+            QMessageBox.critical(self, "Erro ao excluir", str(exc))
 
     def _open_edit_asset_dialog(self, asset_id: int) -> None:
         asset = next((a for a in self._assets if a["id"] == asset_id), None)
