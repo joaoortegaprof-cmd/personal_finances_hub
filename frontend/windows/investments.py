@@ -1151,6 +1151,129 @@ class RiskWorker(QThread):
             self.error_occurred.emit(f"Erro inesperado: {exc}")
 
 
+class RentabilidadeWorker(QThread):
+    """
+    Coleta dados para o gráfico de rentabilidade:
+      1. GET /portfolio/opportunity-cost → portfolio_return_pct, cdi_return_pct
+      2. GET /market/benchmark-comparison?ticker=BOVA11 → retorno do IBOV no período
+    """
+
+    data_ready     = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            opp = self._client.get_opportunity_cost()
+            ibov: dict = {}
+            try:
+                ibov = self._client.get_benchmark_comparison("BOVA11", "1y")
+            except Exception:
+                pass   # IBOV é opcional
+            self.data_ready.emit({"opportunity": opp, "ibov": ibov})
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+# ======================================================================
+# Canvas de rentabilidade — portfolio vs CDI vs IBOV
+# ======================================================================
+
+
+class RentabilidadeCanvas(FigureCanvasQTAgg):
+    """
+    Gráfico de barras horizontais comparando o retorno da carteira de renda
+    variável com CDI e IBOV no mesmo período.
+
+    Barra verde  = retorno acima do CDI (alpha positivo)
+    Barra vermelha = retorno abaixo do CDI
+    """
+
+    _BG    = "#1A1D2E"
+    _GRID  = "#2A2D3E"
+
+    def __init__(self, parent=None) -> None:
+        fig = Figure(figsize=(8, 2.8), facecolor=self._BG)
+        super().__init__(fig)
+        self.setParent(parent)
+        self._fig = fig
+        self._ax  = fig.add_subplot(111)
+        self._draw_empty()
+
+    def _draw_empty(self) -> None:
+        self._ax.clear()
+        self._ax.set_facecolor(self._BG)
+        self._ax.text(
+            0.5, 0.5, "Nenhum dado de rentabilidade disponível",
+            ha="center", va="center", color="#8B90A7",
+            fontsize=10, transform=self._ax.transAxes,
+        )
+        self._ax.axis("off")
+        self._fig.tight_layout()
+        self.draw()
+
+    def plot(self, port_pct: float | None, cdi_pct: float | None, ibov_pct: float | None) -> None:
+        """Redesenha com os retornos percentuais de cada benchmark."""
+        self._ax.clear()
+        self._ax.set_facecolor(self._BG)
+
+        entries: list[tuple[str, float, str]] = []
+        if port_pct is not None:
+            clr = "#00C896" if (cdi_pct is None or port_pct >= cdi_pct) else "#FF6B6B"
+            entries.append(("Carteira (equities)", port_pct, clr))
+        if cdi_pct is not None:
+            entries.append(("CDI", cdi_pct, "#4A9EFF"))
+        if ibov_pct is not None:
+            clr_ibov = "#00C896" if ibov_pct >= 0 else "#FF6B6B"
+            entries.append(("IBOVESPA (BOVA11)", ibov_pct, clr_ibov))
+
+        if not entries:
+            self._draw_empty()
+            return
+
+        labels = [e[0] for e in entries]
+        values = [e[1] for e in entries]
+        colors = [e[2] for e in entries]
+        y_pos  = range(len(entries))
+
+        bars = self._ax.barh(list(y_pos), values, color=colors, height=0.5, alpha=0.88)
+
+        # Anotação de valor na ponta de cada barra
+        max_abs = max(abs(v) for v in values) or 1
+        for bar, val in zip(bars, values):
+            x_pos_ann = val + max_abs * 0.02 if val >= 0 else val - max_abs * 0.02
+            ha = "left" if val >= 0 else "right"
+            self._ax.text(
+                x_pos_ann, bar.get_y() + bar.get_height() / 2,
+                f"{val:+.2f}%",
+                va="center", ha=ha,
+                color="#E8EAED", fontsize=9, fontweight="bold",
+            )
+
+        self._ax.set_yticks(list(y_pos))
+        self._ax.set_yticklabels(labels, color="#C8CAD8", fontsize=9)
+        self._ax.axvline(0, color="#4A4D6A", linewidth=0.8)
+        self._ax.set_xlabel("Retorno no período (%)", color="#8B90A7", fontsize=8)
+        self._ax.tick_params(axis="x", colors="#8B90A7", labelsize=8)
+        self._ax.tick_params(axis="y", left=False)
+        for spine in self._ax.spines.values():
+            spine.set_visible(False)
+        self._ax.set_title("Rentabilidade da carteira vs benchmarks (12 meses)",
+                           color="#C5CAE9", fontsize=10, pad=8)
+        self._ax.set_xlim(
+            min(values + [0]) * 1.4,
+            max(values + [0]) * 1.4 + max_abs * 0.2,
+        )
+
+        self._fig.tight_layout(pad=1.2)
+        self.draw()
+
+
 class DiversificationCanvas(FigureCanvasQTAgg):
     """Gráfico de barras horizontais com diversificação por classe de ativo."""
 
@@ -1231,6 +1354,8 @@ class InvestmentsPage(QWidget):
         self._save_dividend_worker: SaveDividendWorker | None = None
         self._risk_worker: RiskWorker | None = None
         self._risk_loaded: bool = False
+        self._rent_worker: RentabilidadeWorker | None = None
+        self._rent_loaded: bool = False
 
         self._raw_assets: list[dict] = []
         self._assets: list[dict] = []
@@ -1276,6 +1401,10 @@ class InvestmentsPage(QWidget):
         # Aba 3: Análise de Risco
         risk_tab = self._build_risk_tab()
         self._tab_widget.addTab(risk_tab, "Análise de Risco")
+
+        # Aba 4: Rentabilidade vs benchmarks
+        rent_tab = self._build_rentabilidade_tab()
+        self._tab_widget.addTab(rent_tab, "Rentabilidade")
 
         main.addWidget(self._tab_widget)
         main.addStretch()
@@ -1709,6 +1838,8 @@ class InvestmentsPage(QWidget):
             self._load_dividends()
         elif index == 2 and not self._risk_loaded:
             self._load_risk()
+        elif index == 3 and not self._rent_loaded:
+            self._load_rentabilidade()
 
     def _load_dividends(self) -> None:
         if self._dividend_worker and self._dividend_worker.isRunning():
@@ -1835,6 +1966,58 @@ class InvestmentsPage(QWidget):
 
         return tab
 
+    def _build_rentabilidade_tab(self) -> QWidget:
+        """
+        Aba de rentabilidade: mostra o retorno da carteira de renda variável
+        comparado com CDI e IBOVESPA no período de 12 meses.
+        """
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(0, 12, 0, 0)
+        lay.setSpacing(14)
+
+        # Cards de métricas rápidas
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(12)
+        self._rent_card_port  = _RiskMetricCard("Retorno Carteira (12m)", "—",
+            "Retorno estimado da carteira de renda variável nos últimos 12 meses")
+        self._rent_card_cdi   = _RiskMetricCard("CDI (12m)", "—",
+            "Taxa CDI acumulada no período (fonte: opportunity-cost)")
+        self._rent_card_alpha = _RiskMetricCard("Alpha (Carteira − CDI)", "—",
+            "Diferença entre o retorno da carteira e o CDI no período")
+        for c in (self._rent_card_port, self._rent_card_cdi, self._rent_card_alpha):
+            cards_row.addWidget(c)
+        lay.addLayout(cards_row)
+
+        # Gráfico comparativo
+        chart_lbl = QLabel("Comparação de retorno — carteira vs CDI vs IBOVESPA (12 meses)")
+        chart_lbl.setStyleSheet("color: #8B90A7; font-size: 11px; font-weight: 600;")
+        lay.addWidget(chart_lbl)
+
+        self._rent_canvas = RentabilidadeCanvas()
+        self._rent_canvas.setMinimumHeight(200)
+        lay.addWidget(self._rent_canvas)
+
+        # Nota metodológica
+        note = QLabel(
+            "⚠  O retorno da carteira é calculado com base no custo médio ponderado "
+            "dos ativos de renda variável versus o CDI acumulado no período."
+            " IBOVESPA via BOVA11 (yfinance)."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #6B7080; font-size: 10px;")
+        lay.addWidget(note)
+
+        # Loading / erro
+        self._rent_loading = QLabel("Calculando rentabilidade…")
+        self._rent_loading.setObjectName("loadingLabel")
+        self._rent_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._rent_loading.setVisible(False)
+        lay.addWidget(self._rent_loading)
+
+        lay.addStretch()
+        return tab
+
     def _build_risk_table(self) -> QTableWidget:
         headers = ["Ticker", "Nome", "Classe", "Peso %", "Beta", "Volatil. a.a.", "VaR 95%"]
         t = QTableWidget(0, len(headers))
@@ -1861,6 +2044,57 @@ class InvestmentsPage(QWidget):
             )
         )
         self._risk_worker.start()
+
+    def _load_rentabilidade(self) -> None:
+        if self._rent_worker and self._rent_worker.isRunning():
+            return
+        self._rent_loading.setVisible(True)
+        self._rent_canvas.setVisible(False)
+        self._rent_worker = RentabilidadeWorker(self._client)
+        self._rent_worker.data_ready.connect(self._on_rentabilidade_ready)
+        self._rent_worker.error_occurred.connect(
+            lambda msg: (
+                self._rent_loading.setText(f"Erro ao carregar: {msg}"),
+            )
+        )
+        self._rent_worker.start()
+
+    def _on_rentabilidade_ready(self, data: dict) -> None:
+        self._rent_loaded = True
+        self._rent_loading.setVisible(False)
+        self._rent_canvas.setVisible(True)
+
+        opp  = data.get("opportunity", {})
+        ibov = data.get("ibov", {})
+
+        port_pct = opp.get("portfolio_return_pct")
+        cdi_pct  = opp.get("cdi_return_pct")
+        alpha    = opp.get("alpha_pct")
+
+        # IBOV: tenta chaves comuns que a API pode retornar
+        ibov_pct = (
+            ibov.get("asset_return_pct")
+            or ibov.get("ticker_return_pct")
+            or ibov.get("return_pct")
+            or ibov.get("total_return_pct")
+        )
+
+        def _pct(v, suffix="%"):
+            return f"{v:+.2f}{suffix}" if v is not None else "N/D"
+
+        alpha_color = "#00C896" if (alpha or 0) >= 0 else "#FF6B6B"
+        self._rent_card_port.set_value(_pct(port_pct))
+        self._rent_card_cdi.set_value(_pct(cdi_pct))
+        self._rent_card_alpha._val.setStyleSheet(
+            f"color: {alpha_color}; font-size: 18px; font-weight: 700;"
+        )
+        self._rent_card_alpha.set_value(_pct(alpha))
+
+        self._rent_canvas.plot(
+            port_pct,
+            cdi_pct,
+            ibov_pct,
+        )
 
     def _on_risk_ready(self, data: dict) -> None:
         self._risk_loaded = True

@@ -26,3 +26,13 @@
 2026-05-22 12:42:40 | INFO     | __main__:147 | Interface aberta. Aguardando o usuário.
 2026-05-22 12:42:50 | INFO     | __main__:149 | Aplicação encerrada (código 0).
 2026-05-22 12:56:35 | INFO     | __main__:149 | Aplicação encerrada (código 0).
+2026-05-22 17:17:48 | INFO     | __main__:89 | Iniciando FinanceHub…
+2026-05-22 17:17:48 | INFO     | __main__:105 | Subindo servidor FastAPI em 127.0.0.1:8765
+2026-05-22 17:17:48 | INFO     | __main__:115 | Aguardando API ficar disponível em http://127.0.0.1:8765/health…
+2026-05-22 17:17:50 | INFO     | __main__:125 | API pronta.
+2026-05-22 17:17:54 | INFO     | __main__:147 | Interface aberta. Aguardando o usuário.
+2026-05-22 18:43:49 | INFO     | __main__:89 | Iniciando FinanceHub…
+2026-05-22 18:43:49 | INFO     | __main__:105 | Subindo servidor FastAPI em 127.0.0.1:8765
+2026-05-22 18:43:49 | INFO     | __main__:115 | Aguardando API ficar disponível em http://127.0.0.1:8765/health…
+2026-05-22 18:43:51 | INFO     | __main__:125 | API pronta.
+2026-05-22 18:43:53 | INFO     | __main__:147 | Interface aberta. Aguardando o usuário.

@@ -77,11 +77,32 @@ class CardsWorker(QThread):
             cards    = self._client.get_cards()
             accounts = self._client.get_accounts()
             for card in cards:
+                # Limite disponível
                 try:
                     lim = self._client.get_card_available_limit(card["id"])
                     card["_available"] = lim.get("available", card.get("credit_limit", 0))
                 except ApiError:
                     card["_available"] = card.get("credit_limit", 0)
+
+                # Fatura mais recente (aberta > fechada > nenhuma)
+                try:
+                    invoices = self._client.get_card_invoices(card["id"])
+                    cur = next((i for i in invoices if i.get("status") == "aberta"), None)
+                    if cur is None:
+                        cur = next((i for i in invoices if i.get("status") == "fechada"), None)
+                    if cur:
+                        card["_fatura_amount"] = float(cur.get("total_amount", 0))
+                        card["_fatura_status"] = cur.get("status", "aberta")
+                        card["_fatura_due"]    = cur.get("due_date", "")
+                    else:
+                        card["_fatura_amount"] = 0.0
+                        card["_fatura_status"] = None
+                        card["_fatura_due"]    = ""
+                except ApiError:
+                    card["_fatura_amount"] = 0.0
+                    card["_fatura_status"] = None
+                    card["_fatura_due"]    = ""
+
             self.data_ready.emit(cards, accounts)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
@@ -430,7 +451,9 @@ class CreditCardWidget(QFrame):
         super().__init__(parent)
         self._card = card
         self._selected = False
-        self.setFixedSize(320, 180)
+        # Altura base 180 px; expande 36 px se há fatura para mostrar
+        h = 216 if card.get("_fatura_status") else 180
+        self.setFixedSize(320, h)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._build_ui()
         self._apply_style()
@@ -528,6 +551,56 @@ class CreditCardWidget(QFrame):
             }
         """)
         layout.addWidget(bar)
+
+        # Linha de fatura — só exibe se houver fatura aberta ou fechada
+        fatura_status = self._card.get("_fatura_status")
+        if fatura_status:
+            fatura_amount = float(self._card.get("_fatura_amount", 0))
+            fatura_due    = self._card.get("_fatura_due", "")
+            _STATUS_COLOR_CARD = {
+                "aberta":  "#4ABFFF",   # azul claro
+                "fechada": "#FFD06B",   # laranja suave
+            }
+            fc = _STATUS_COLOR_CARD.get(fatura_status, "#FFFFFF")
+            _STATUS_LABEL_CARD = {"aberta": "Fatura aberta", "fechada": "Fatura fechada"}
+            flabel = _STATUS_LABEL_CARD.get(fatura_status, fatura_status.capitalize())
+
+            div = QFrame()
+            div.setFixedHeight(1)
+            div.setStyleSheet("background: rgba(255,255,255,30); margin: 0px;")
+            layout.addWidget(div)
+
+            fatura_row = QHBoxLayout()
+            fatura_row.setContentsMargins(0, 0, 0, 0)
+            fatura_row.setSpacing(4)
+
+            flbl_key = QLabel(flabel)
+            flbl_key.setStyleSheet(
+                f"color: {fc}; font-size: 8px; font-weight: 600;"
+                " background: transparent; letter-spacing: 0.5px;"
+            )
+            fatura_row.addWidget(flbl_key)
+
+            if fatura_due:
+                try:
+                    due = date.fromisoformat(fatura_due)
+                    due_str = due.strftime("%d/%m")
+                    due_lbl = QLabel(f"venc. {due_str}")
+                    due_lbl.setStyleSheet(
+                        "color: rgba(255,255,255,130); font-size: 7px; background: transparent;"
+                    )
+                    fatura_row.addWidget(due_lbl)
+                except (ValueError, TypeError):
+                    pass
+
+            fatura_row.addStretch()
+
+            fval = QLabel(_fmt_brl(fatura_amount))
+            fval.setStyleSheet(
+                f"color: {fc}; font-size: 11px; font-weight: 700; background: transparent;"
+            )
+            fatura_row.addWidget(fval)
+            layout.addLayout(fatura_row)
 
     def _apply_style(self) -> None:
         color = self._card.get("card_color", "#7B61FF")

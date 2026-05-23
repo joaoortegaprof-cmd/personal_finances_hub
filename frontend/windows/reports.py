@@ -25,7 +25,11 @@ import calendar
 from datetime import date
 from typing import Any
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+import base64
+import io
+from collections import defaultdict
+
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextDocument
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog, QPageSetupDialog
 from PyQt6.QtWidgets import (
@@ -136,7 +140,30 @@ class ReportsPage(QWidget):
         self._client = ApiClient()
         self._worker: ReportWorker | None = None
         self._current_html = ""
+        self._first_load = True
+
+        # Debounce: aguarda 800 ms após a última mudança antes de gerar
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(800)
+        self._debounce_timer.timeout.connect(self._generate)
+
         self._build_ui()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._first_load:
+            self._first_load = False
+            # Dispara a geração inicial com 200 ms de atraso para a UI terminar de montar
+            QTimer.singleShot(200, self._generate)
+
+    def load_data(self) -> None:
+        """Compatibilidade com o botão 'Atualizar' da sidebar."""
+        self._generate()
+
+    def _schedule_generate(self) -> None:
+        """Reinicia o timer de debounce a cada mudança de tipo ou período."""
+        self._debounce_timer.start()
 
     # ------------------------------------------------------------------
     # UI
@@ -187,6 +214,7 @@ class ReportsPage(QWidget):
             rb.setProperty("report_key", key)
             if i == 0:
                 rb.setChecked(True)
+            rb.toggled.connect(lambda checked: self._schedule_generate() if checked else None)
             self._type_group.addButton(rb, i)
             type_row.addWidget(rb)
         type_row.addStretch()
@@ -203,11 +231,12 @@ class ReportsPage(QWidget):
         today = date.today()
         first_of_month = date(today.year, today.month, 1)
 
+        from PyQt6.QtCore import QDate
         self._start_date = QDateEdit()
         self._start_date.setCalendarPopup(True)
         self._start_date.setDisplayFormat("dd/MM/yyyy")
-        from PyQt6.QtCore import QDate
         self._start_date.setDate(QDate(first_of_month.year, first_of_month.month, 1))
+        self._start_date.dateChanged.connect(self._schedule_generate)
         period_row.addWidget(self._start_date)
 
         period_row.addWidget(QLabel("até"))
@@ -217,6 +246,7 @@ class ReportsPage(QWidget):
         self._end_date.setDisplayFormat("dd/MM/yyyy")
         last_day = calendar.monthrange(today.year, today.month)[1]
         self._end_date.setDate(QDate(today.year, today.month, last_day))
+        self._end_date.dateChanged.connect(self._schedule_generate)
         period_row.addWidget(self._end_date)
 
         period_row.addStretch()
@@ -419,6 +449,89 @@ class ReportsPage(QWidget):
           <tbody>{rows}</tbody>
         </table>"""
 
+    def _make_summary_chart_html(self, transactions: list[dict]) -> str:
+        """
+        Gera um gráfico de barras mensais (receitas × despesas) como PNG base64
+        e retorna a tag <img> para embutir no HTML do relatório.
+
+        Usa FigureCanvasAgg diretamente para não colidir com o backend qtagg
+        já inicializado pelo módulo de investimentos.
+        """
+        try:
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
+
+            income_map: dict[str, float] = defaultdict(float)
+            expense_map: dict[str, float] = defaultdict(float)
+
+            for t in transactions:
+                tx_date = t.get("transaction_date", "")
+                if len(tx_date) >= 7:
+                    key = tx_date[:7]   # "2024-01"
+                    amount = float(t.get("amount", 0))
+                    tx_type = t.get("transaction_type", "")
+                    if tx_type == "income":
+                        income_map[key] += amount
+                    elif tx_type in ("debit", "credit"):
+                        expense_map[key] += amount
+
+            all_months = sorted(set(income_map) | set(expense_map))
+            if not all_months:
+                return ""
+
+            # Labels curtos: "Jan", "Fev", …
+            _PT = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+                   "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+            labels = []
+            for m in all_months:
+                try:
+                    labels.append(_PT[int(m[5:7])])
+                except (ValueError, IndexError):
+                    labels.append(m[5:])
+
+            income_vals  = [income_map[m]  for m in all_months]
+            expense_vals = [expense_map[m] for m in all_months]
+            balance_vals = [i - e for i, e in zip(income_vals, expense_vals)]
+
+            fig = Figure(figsize=(10, 3.2), facecolor="#f8faff")
+            FigureCanvasAgg(fig)
+            ax = fig.add_subplot(111)
+            ax.set_facecolor("#f8faff")
+
+            x = range(len(labels))
+            w = 0.32
+            ax.bar([i - w for i in x], income_vals,  w * 2, color="#0a7a4a", label="Receitas",  alpha=0.85)
+            ax.bar([i + w for i in x], expense_vals, w * 2, color="#b71c1c", label="Despesas",  alpha=0.85)
+            ax.plot(list(x), balance_vals, color="#1a3a6e", marker="o", linewidth=1.5,
+                    markersize=4, label="Saldo", zorder=5)
+
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(labels, fontsize=9)
+            ax.axhline(0, color="#aaaaaa", linewidth=0.8, linestyle="--")
+            ax.legend(fontsize=8, loc="upper right")
+            ax.set_title("Receitas × Despesas por mês", fontsize=11, color="#1a3a6e", pad=6)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(axis="y", labelsize=8)
+            ax.yaxis.set_major_formatter(
+                __import__("matplotlib.ticker", fromlist=["FuncFormatter"]).FuncFormatter(
+                    lambda v, _: f"R${v/1000:.0f}k" if abs(v) >= 1000 else f"R${v:.0f}"
+                )
+            )
+
+            fig.tight_layout(pad=1.0)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=96, bbox_inches="tight")
+            buf.seek(0)
+            b64 = base64.b64encode(buf.read()).decode()
+            return (
+                f'<img src="data:image/png;base64,{b64}" '
+                f'style="max-width:100%; height:auto; margin:16px 0; '
+                f'border-radius:6px; border:1px solid #e0e0e0;">'
+            )
+        except Exception:
+            return ""   # gráfico opcional — falhar silenciosamente
+
     def _build_summary_body(self, data: dict) -> str:
         transactions = data.get("transactions", [])
         if not transactions:
@@ -443,6 +556,8 @@ class ReportsPage(QWidget):
         def fmt(v: float) -> str:
             return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+        chart_html = self._make_summary_chart_html(transactions)
+
         return f"""
         <div class="summary-box">
           <div class="summary-item">
@@ -462,6 +577,7 @@ class ReportsPage(QWidget):
             <div class="summary-value">{rate:.1f}%</div>
           </div>
         </div>
+        {chart_html}
         <h2>Despesas por categoria</h2>
         <table>
           <thead><tr><th>Categoria</th><th>Total</th></tr></thead>
