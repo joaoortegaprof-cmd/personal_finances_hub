@@ -65,6 +65,7 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.ticker_logo import TickerLogoWidget
 from frontend.components.colors import (
     COLOR_ASSET      as _GREEN,
     COLOR_EXPENSE    as _RED,
@@ -1571,11 +1572,14 @@ class InvestmentsPage(QWidget):
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(48)  # altura para logo 36px
 
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(_COL_TICKER, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(_COL_TICKER, 160)
         table.setColumnWidth(_COL_ACTIONS, 40)
 
         return table
@@ -1711,9 +1715,36 @@ class InvestmentsPage(QWidget):
             avg_price = float(pos.get("avg_price", 0))
             cost = float(pos.get("estimated_cost", 0))
             asset_type = pos.get("asset_type", "")
+            ticker = pos.get("ticker") or "—"
 
-            cells = [
-                (pos.get("ticker") or "—", _BLUE),
+            # ── Coluna 0: logo circular + ticker bold + nome menor ──────
+            logo_cell = QWidget()
+            logo_lay  = QHBoxLayout(logo_cell)
+            logo_lay.setContentsMargins(8, 4, 8, 4)
+            logo_lay.setSpacing(8)
+
+            logo_widget = TickerLogoWidget(ticker, asset_type, size=36)
+            logo_lay.addWidget(logo_widget)
+
+            text_col = QWidget()
+            text_lay = QVBoxLayout(text_col)
+            text_lay.setContentsMargins(0, 0, 0, 0)
+            text_lay.setSpacing(1)
+            ticker_lbl = QLabel(ticker)
+            ticker_lbl.setStyleSheet(
+                f"color: {_BLUE}; font-size: 12px; font-weight: 700;"
+            )
+            name_short = (pos.get("name", "") or "")[:22]
+            name_lbl = QLabel(name_short)
+            name_lbl.setStyleSheet(f"color: {_MUTED}; font-size: 10px;")
+            text_lay.addWidget(ticker_lbl)
+            text_lay.addWidget(name_lbl)
+            logo_lay.addWidget(text_col, stretch=1)
+
+            self._table.setCellWidget(row, _COL_TICKER, logo_cell)
+
+            # ── Colunas 1-5: dados textuais ─────────────────────────────
+            text_cells = [
                 (pos.get("name", ""), _WHITE),
                 (_ASSET_TYPE_DISPLAY.get(asset_type, asset_type), _MUTED),
                 (_fmt_qty(net_qty), _WHITE),
@@ -1721,7 +1752,8 @@ class InvestmentsPage(QWidget):
                 (_fmt_brl(cost), _GREEN if cost > 0 else _MUTED),
             ]
 
-            for col, (text, color) in enumerate(cells):
+            for col_offset, (text, color) in enumerate(text_cells):
+                col = col_offset + 1   # _COL_NAME starts at 1
                 item = QTableWidgetItem(text)
                 item.setForeground(QColor(color))
                 if col in (_COL_QTY, _COL_AVG, _COL_COST):
