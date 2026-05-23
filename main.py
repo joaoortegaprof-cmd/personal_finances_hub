@@ -124,6 +124,20 @@ def main() -> None:
 
     logger.info("API pronta.")
 
+    # ── Agendador de notificações ─────────────────────────────────────────
+    try:
+        from backend.services.notification_scheduler import NotificationScheduler
+
+        scheduler = NotificationScheduler(
+            api_base=f"http://{host}:{port}",
+            interval_seconds=3600,   # verifica a cada hora
+        )
+        scheduler.start()
+        logger.info("NotificationScheduler iniciado.")
+    except Exception as exc:
+        # Notificações são opcionais — não impedem a app de abrir
+        logger.warning("Falha ao iniciar NotificationScheduler: {}", exc)
+
     # ── PyQt6 ─────────────────────────────────────────────────────────────
     try:
         from frontend.windows.main_window import MainWindow
