@@ -59,6 +59,15 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.colors import (
+    COLOR_ASSET, COLOR_EXPENSE, COLOR_INVESTMENT, COLOR_WARNING,
+    COLOR_NEUTRAL, COLOR_MUTED, COLOR_BG, COLOR_GRID,
+    COLOR_STOCK, COLOR_FII, COLOR_ETF, COLOR_TREASURY,
+    COLOR_FIXED_INCOME, COLOR_CRYPTO, COLOR_INTERNATIONAL,
+    COLOR_PENSION, COLOR_OTHER, COLOR_CASH,
+    COLOR_ASSET_RGB, COLOR_EXPENSE_RGB, COLOR_INVESTMENT_RGB,
+    CATEGORY_COLOR, hex_to_rgb,
+)
 from frontend.components.icons import icon as _svg_icon
 from frontend.components.signals import app_signals
 from frontend.windows.settings_page import load_settings
@@ -68,22 +77,26 @@ from frontend.windows.settings_page import load_settings
 # Constantes visuais
 # ======================================================================
 
-_BG    = "#1A1D2E"
-_TEXT  = "#C8CAD8"
-_GREEN = "#00C896"
-_RED   = "#FF6B6B"
-_BLUE  = "#4A9EFF"
-_GRID  = "#2A2D3E"
+_BG    = COLOR_BG
+_TEXT  = COLOR_NEUTRAL
+_GREEN = COLOR_ASSET
+_RED   = COLOR_EXPENSE
+_BLUE  = COLOR_INVESTMENT
+_GRID  = COLOR_GRID
 
-_BG_RGB    = (26/255, 29/255, 46/255)
-_TEXT_RGB  = (200/255, 202/255, 216/255)
-_GREEN_RGB = (0/255, 200/255, 150/255)
-_RED_RGB   = (255/255, 107/255, 107/255)
-_BLUE_RGB  = (74/255, 158/255, 255/255)
-_GRID_RGB  = (42/255, 45/255, 62/255)
+_BG_RGB    = hex_to_rgb(COLOR_BG)
+_TEXT_RGB  = hex_to_rgb(COLOR_NEUTRAL)
+_GREEN_RGB = COLOR_ASSET_RGB
+_RED_RGB   = COLOR_EXPENSE_RGB
+_BLUE_RGB  = COLOR_INVESTMENT_RGB
+_GRID_RGB  = hex_to_rgb(COLOR_GRID)
 
+# Categorias semânticas do dashboard
 _CATEGORIES = ["Ações", "FIIs", "ETFs", "Tesouro", "Renda Fixa", "Contas", "Cripto", "Outros"]
-_CAT_COLORS = ["#4A9EFF", "#00C896", "#FFB347", "#A78BFA", "#F59E0B", "#6EE7B7", "#F97316", "#94A3B8"]
+_CAT_COLORS = [
+    COLOR_STOCK, COLOR_FII, COLOR_ETF, COLOR_TREASURY,
+    COLOR_FIXED_INCOME, COLOR_CASH, COLOR_CRYPTO, COLOR_OTHER,
+]
 _COLOR_MAP  = dict(zip(_CATEGORIES, _CAT_COLORS))
 
 _TYPE_TO_CAT: dict[str, str] = {
@@ -100,8 +113,9 @@ _TYPE_TO_CAT: dict[str, str] = {
 
 # Paleta de cores para ativos individuais dentro de cada donut de categoria
 _ASSET_SLOT_COLORS = [
-    "#4A9EFF", "#00C896", "#FFB347", "#A78BFA", "#F59E0B",
-    "#6EE7B7", "#F97316", "#EC4899", "#34D399", "#FBBF24",
+    COLOR_STOCK, COLOR_FII, COLOR_ETF, COLOR_TREASURY,
+    COLOR_FIXED_INCOME, COLOR_CRYPTO, COLOR_WARNING, COLOR_PENSION,
+    COLOR_INTERNATIONAL, COLOR_CASH,
 ]
 
 _MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",

@@ -49,6 +49,14 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.colors import (
+    COLOR_ASSET      as _C_POS,
+    COLOR_EXPENSE    as _C_NEG,
+    COLOR_MUTED      as _C_MUTED,
+    COLOR_NEUTRAL    as _C_WHITE,
+    COLOR_INVESTMENT as _C_ACCENT,
+    CATEGORY_COLOR,
+)
 from frontend.components.icons import icon as _svg_icon
 
 
@@ -83,12 +91,6 @@ _COL_INVESTED = 5
 _COL_ACTUAL   = 6
 _COL_RETURN   = 7
 _COL_DAY      = 8
-
-_C_POS    = "#00C896"
-_C_NEG    = "#FF6B6B"
-_C_MUTED  = "#8B90A7"
-_C_WHITE  = "#E8EAED"
-_C_ACCENT = "#4A9EFF"
 
 _FIXED_TYPES = {"tesouro_direto", "renda_fixa", "previdencia"}
 

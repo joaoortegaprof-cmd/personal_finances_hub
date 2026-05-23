@@ -1,16 +1,35 @@
 /* ================================================================
    FinanceHub — Tema escuro profissional
-   Paleta de cores:
-     Fundo principal  : #1A1D2E
-     Fundo elevado    : #222640   (cards, sidebar)
-     Fundo 2° nível   : #2A2E4A   (inputs, hover)
-     Borda sutil      : #2E3250
-     Texto primário   : #FFFFFF
-     Texto secundário : #C8CAD8
-     Verde (positivo) : #00C896
-     Vermelho (negativo): #FF6B6B
-     Azul (info)      : #4A9EFF
-     Laranja (aviso)  : #FFB347
+   Paleta de cores (ver frontend/components/colors.py para constantes):
+
+   ESTRUTURA
+     Fundo principal  : #1A1D2E  (COLOR_BG)
+     Fundo elevado    : #222640  (COLOR_SURFACE)   cards, sidebar
+     Fundo 2° nível   : #2A2E4A  (COLOR_SURFACE2)  inputs, hover
+     Borda sutil      : #2E3250  (COLOR_BORDER)
+
+   TEXTO
+     Texto primário   : #E8EAED  (COLOR_NEUTRAL)
+     Texto secundário : #C8CAD8  (COLOR_BALANCE)
+     Texto apagado    : #8B90A7  (COLOR_MUTED)
+
+   SEMÂNTICA
+     Receitas/positivo: #00C896  (COLOR_ASSET / COLOR_INCOME)
+     Despesas/passivos: #FF6B6B  (COLOR_EXPENSE)   — VERMELHO
+     Dívidas/perigo   : #FF4D4D  (COLOR_PASSIVE / COLOR_DEBT)
+     Investimentos    : #4A9EFF  (COLOR_INVESTMENT) — AZUL
+     Aportes          : #378ADD  (COLOR_APORT)
+     Aviso/laranja    : #FFB347  (COLOR_WARNING)
+
+   CATEGORIAS
+     Ações            : #00C896  (COLOR_STOCK)      verde
+     FIIs             : #4A9EFF  (COLOR_FII)        azul
+     ETFs             : #9B59B6  (COLOR_ETF)        roxo
+     Tesouro          : #F39C12  (COLOR_TREASURY)   dourado
+     Renda Fixa       : #1ABC9C  (COLOR_FIXED_INCOME)
+     Cripto           : #E67E22  (COLOR_CRYPTO)     laranja
+     Internacional    : #3498DB  (COLOR_INTERNATIONAL)
+     Previdência      : #A78BFA  (COLOR_PENSION)    lilás
 ================================================================ */
 
 /* ---- Reset base ------------------------------------------- */
@@ -450,10 +469,13 @@ QToolTip {
 }
 
 /* ---- Mensagens de status / labels especiais --------------- */
-QLabel[status="positive"] { color: #00C896; }
-QLabel[status="negative"] { color: #FF6B6B; }
-QLabel[status="info"]     { color: #4A9EFF; }
-QLabel[status="warning"]  { color: #FFB347; }
+/* Semântica consistente com frontend/components/colors.py      */
+QLabel[status="positive"] { color: #00C896; }  /* COLOR_ASSET  */
+QLabel[status="negative"] { color: #FF6B6B; }  /* COLOR_EXPENSE */
+QLabel[status="danger"]   { color: #FF4D4D; }  /* COLOR_PASSIVE */
+QLabel[status="info"]     { color: #4A9EFF; }  /* COLOR_INVESTMENT */
+QLabel[status="warning"]  { color: #FFB347; }  /* COLOR_WARNING */
+QLabel[status="muted"]    { color: #8B90A7; }  /* COLOR_MUTED */
 
 /* ---- Separadores ------------------------------------------ */
 QFrame[frameShape="4"],   /* HLine */

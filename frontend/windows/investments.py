@@ -65,6 +65,19 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.colors import (
+    COLOR_ASSET      as _GREEN,
+    COLOR_EXPENSE    as _RED,
+    COLOR_INVESTMENT as _BLUE,
+    COLOR_WARNING    as _ORANGE,
+    COLOR_NEUTRAL    as _WHITE,
+    COLOR_BALANCE    as _LIGHT,
+    COLOR_MUTED      as _MUTED,
+    COLOR_BG         as _BG_COLOR,
+    COLOR_GRID       as _GRID_COLOR,
+    COLOR_ASSET_RGB, COLOR_EXPENSE_RGB, COLOR_INVESTMENT_RGB,
+    CATEGORY_COLOR,
+)
 from frontend.components.icons import icon as _svg_icon
 
 
@@ -359,7 +372,7 @@ class NewAssetDialog(QDialog):
         self._ticker_combo.activated.connect(self._on_ticker_activated)
         ticker_row.addWidget(self._ticker_combo, 1)
         lookup_btn = QPushButton()
-        lookup_btn.setIcon(_svg_icon("refresh", "#C8CAD8", 14))
+        lookup_btn.setIcon(_svg_icon("refresh", _LIGHT, 14))
         lookup_btn.setToolTip("Buscar nome do ticker")
         lookup_btn.setFixedWidth(36)
         lookup_btn.clicked.connect(self._lookup_name)
@@ -1077,17 +1090,17 @@ class DividendsBarCanvas(FigureCanvasQTAgg):
     """Barras dos proventos mensais dos últimos 12 meses."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        fig = Figure(figsize=(10, 3), facecolor="#1A1D2E")
+        fig = Figure(figsize=(10, 3), facecolor=_BG_COLOR)
         self.axes = fig.add_subplot(111)
         super().__init__(fig)
         self._style_axes()
 
     def _style_axes(self) -> None:
         ax = self.axes
-        ax.set_facecolor("#1A1D2E")
-        ax.tick_params(colors="#8B90A7", labelsize=8)
+        ax.set_facecolor(_BG_COLOR)
+        ax.tick_params(colors=_MUTED, labelsize=8)
         for spine in ax.spines.values():
-            spine.set_color("#2A2D3E")
+            spine.set_color(_GRID_COLOR)
 
     def plot(self, by_month: dict[str, float]) -> None:
         self.axes.cla()
@@ -1098,15 +1111,15 @@ class DividendsBarCanvas(FigureCanvasQTAgg):
 
         labels = list(by_month.keys())
         values = [float(v) for v in by_month.values()]
-        colors = ["#00C896" if v > 0 else "#8B90A7" for v in values]
+        colors = [_GREEN if v > 0 else _MUTED for v in values]
 
         x_pos = range(len(labels))
         bars = self.axes.bar(x_pos, values, color=colors, width=0.6)
         self.axes.set_xticks(list(x_pos))
         short_labels = [lbl[5:] if len(lbl) >= 7 else lbl for lbl in labels]
         self.axes.set_xticklabels(short_labels, rotation=30, ha="right", fontsize=7)
-        self.axes.set_ylabel("R$", color="#8B90A7", fontsize=8)
-        self.axes.yaxis.set_tick_params(labelcolor="#8B90A7")
+        self.axes.set_ylabel("R$", color=_MUTED, fontsize=8)
+        self.axes.yaxis.set_tick_params(labelcolor=_MUTED)
 
         # Anotação de valor em cima de cada barra
         for bar, val in zip(bars, values):
@@ -1116,7 +1129,7 @@ class DividendsBarCanvas(FigureCanvasQTAgg):
                     bar.get_height() + max(values) * 0.01,
                     f"R${val:.0f}",
                     ha="center", va="bottom",
-                    color="#E8EAED", fontsize=6,
+                    color=_WHITE, fontsize=6,
                 )
 
         self.figure.tight_layout()
@@ -1194,8 +1207,8 @@ class RentabilidadeCanvas(FigureCanvasQTAgg):
     Barra vermelha = retorno abaixo do CDI
     """
 
-    _BG    = "#1A1D2E"
-    _GRID  = "#2A2D3E"
+    _BG    = _BG_COLOR
+    _GRID  = _GRID_COLOR
 
     def __init__(self, parent=None) -> None:
         fig = Figure(figsize=(8, 2.8), facecolor=self._BG)
@@ -1210,7 +1223,7 @@ class RentabilidadeCanvas(FigureCanvasQTAgg):
         self._ax.set_facecolor(self._BG)
         self._ax.text(
             0.5, 0.5, "Nenhum dado de rentabilidade disponível",
-            ha="center", va="center", color="#8B90A7",
+            ha="center", va="center", color=_MUTED,
             fontsize=10, transform=self._ax.transAxes,
         )
         self._ax.axis("off")
@@ -1224,12 +1237,12 @@ class RentabilidadeCanvas(FigureCanvasQTAgg):
 
         entries: list[tuple[str, float, str]] = []
         if port_pct is not None:
-            clr = "#00C896" if (cdi_pct is None or port_pct >= cdi_pct) else "#FF6B6B"
+            clr = _GREEN if (cdi_pct is None or port_pct >= cdi_pct) else _RED
             entries.append(("Carteira (equities)", port_pct, clr))
         if cdi_pct is not None:
-            entries.append(("CDI", cdi_pct, "#4A9EFF"))
+            entries.append(("CDI", cdi_pct, _BLUE))
         if ibov_pct is not None:
-            clr_ibov = "#00C896" if ibov_pct >= 0 else "#FF6B6B"
+            clr_ibov = _GREEN if ibov_pct >= 0 else _RED
             entries.append(("IBOVESPA (BOVA11)", ibov_pct, clr_ibov))
 
         if not entries:
@@ -1252,19 +1265,19 @@ class RentabilidadeCanvas(FigureCanvasQTAgg):
                 x_pos_ann, bar.get_y() + bar.get_height() / 2,
                 f"{val:+.2f}%",
                 va="center", ha=ha,
-                color="#E8EAED", fontsize=9, fontweight="bold",
+                color=_WHITE, fontsize=9, fontweight="bold",
             )
 
         self._ax.set_yticks(list(y_pos))
-        self._ax.set_yticklabels(labels, color="#C8CAD8", fontsize=9)
+        self._ax.set_yticklabels(labels, color=_LIGHT, fontsize=9)
         self._ax.axvline(0, color="#4A4D6A", linewidth=0.8)
-        self._ax.set_xlabel("Retorno no período (%)", color="#8B90A7", fontsize=8)
-        self._ax.tick_params(axis="x", colors="#8B90A7", labelsize=8)
+        self._ax.set_xlabel("Retorno no período (%)", color=_MUTED, fontsize=8)
+        self._ax.tick_params(axis="x", colors=_MUTED, labelsize=8)
         self._ax.tick_params(axis="y", left=False)
         for spine in self._ax.spines.values():
             spine.set_visible(False)
         self._ax.set_title("Rentabilidade da carteira vs benchmarks (12 meses)",
-                           color="#C5CAE9", fontsize=10, pad=8)
+                           color=_LIGHT, fontsize=10, pad=8)
         self._ax.set_xlim(
             min(values + [0]) * 1.4,
             max(values + [0]) * 1.4 + max_abs * 0.2,
@@ -1277,9 +1290,9 @@ class RentabilidadeCanvas(FigureCanvasQTAgg):
 class DiversificationCanvas(FigureCanvasQTAgg):
     """Gráfico de barras horizontais com diversificação por classe de ativo."""
 
-    _BG   = "#1A1D2E"
-    _GRID = "#2A2D3E"
-    _COLORS = ["#4A9EFF", "#00C896", "#FFB347", "#FF6B6B",
+    _BG   = _BG_COLOR
+    _GRID = _GRID_COLOR
+    _COLORS = [_BLUE, _GREEN, _ORANGE, _RED,
                "#9B6DFF", "#FF9ECD", "#50D8D7", "#A0A0A0"]
 
     _TYPE_LABELS = {
@@ -1319,13 +1332,13 @@ class DiversificationCanvas(FigureCanvasQTAgg):
 
         for i, (v, lbl) in enumerate(zip(values, labels)):
             self._ax.text(v + 0.5, i, f"{v:.1f}%", va="center",
-                          color="#C8CAD8", fontsize=8)
+                          color=_LIGHT, fontsize=8)
             self._ax.text(-0.5, i, lbl, va="center", ha="right",
-                          color="#8B90A7", fontsize=8)
+                          color=_MUTED, fontsize=8)
 
         self._ax.set_yticks([])
-        self._ax.set_xlabel("% da carteira", color="#8B90A7", fontsize=8)
-        self._ax.tick_params(colors="#8B90A7", labelsize=8)
+        self._ax.set_xlabel("% da carteira", color=_MUTED, fontsize=8)
+        self._ax.tick_params(colors=_MUTED, labelsize=8)
         for spine in self._ax.spines.values():
             spine.set_color(self._GRID)
         self._ax.set_xlim(-12, max(values) * 1.15 if values else 100)
@@ -1458,9 +1471,9 @@ class InvestmentsPage(QWidget):
         # --- Cards de resumo de proventos ---
         div_cards_row = QHBoxLayout()
         div_cards_row.setSpacing(16)
-        self._div_card_total = _SummaryCard("Total Recebido no Ano", "#00C896")
-        self._div_card_avg = _SummaryCard("Média Mensal", "#4A9EFF")
-        self._div_card_top = _SummaryCard("Maior Pagador", "#FFB347")
+        self._div_card_total = _SummaryCard("Total Recebido no Ano", _GREEN)
+        self._div_card_avg = _SummaryCard("Média Mensal", _BLUE)
+        self._div_card_top = _SummaryCard("Maior Pagador", _ORANGE)
         for card in [self._div_card_total, self._div_card_avg, self._div_card_top]:
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             div_cards_row.addWidget(card)
@@ -1521,9 +1534,9 @@ class InvestmentsPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(16)
 
-        self._card_total = _SummaryCard("Total Investido", "#4A9EFF")
-        self._card_assets = _SummaryCard("Ativos na Carteira", "#E8EAED")
-        self._card_distribution = _SummaryCard("Maior Posição", "#FFB347")
+        self._card_total = _SummaryCard("Total Investido", _BLUE)
+        self._card_assets = _SummaryCard("Ativos na Carteira", _WHITE)
+        self._card_distribution = _SummaryCard("Maior Posição", _ORANGE)
 
         for card in [self._card_total, self._card_assets, self._card_distribution]:
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1587,10 +1600,10 @@ class InvestmentsPage(QWidget):
         cards_row.setSpacing(12)
 
         # Cada card de liquidez é um _LiquidityCard com cor associada à urgência
-        self._liq_d0 = _LiquidityCard("D+0", "Disponível hoje", "#00C896")
-        self._liq_d1 = _LiquidityCard("D+1", "Próximo dia útil", "#4A9EFF")
-        self._liq_d2 = _LiquidityCard("D+2", "Liquidação B3", "#FFB347")
-        self._liq_mat = _LiquidityCard("Vencimento", "Apenas no vencimento", "#8B90A7")
+        self._liq_d0 = _LiquidityCard("D+0", "Disponível hoje", _GREEN)
+        self._liq_d1 = _LiquidityCard("D+1", "Próximo dia útil", _BLUE)
+        self._liq_d2 = _LiquidityCard("D+2", "Liquidação B3", _ORANGE)
+        self._liq_mat = _LiquidityCard("Vencimento", "Apenas no vencimento", _RED)
 
         for card in [self._liq_d0, self._liq_d1, self._liq_d2, self._liq_mat]:
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1700,12 +1713,12 @@ class InvestmentsPage(QWidget):
             asset_type = pos.get("asset_type", "")
 
             cells = [
-                (pos.get("ticker") or "—", "#4A9EFF"),
-                (pos.get("name", ""), "#E8EAED"),
-                (_ASSET_TYPE_DISPLAY.get(asset_type, asset_type), "#8B90A7"),
-                (_fmt_qty(net_qty), "#E8EAED"),
-                (_fmt_brl(avg_price), "#E8EAED"),
-                (_fmt_brl(cost), "#00C896" if cost > 0 else "#8B90A7"),
+                (pos.get("ticker") or "—", _BLUE),
+                (pos.get("name", ""), _WHITE),
+                (_ASSET_TYPE_DISPLAY.get(asset_type, asset_type), _MUTED),
+                (_fmt_qty(net_qty), _WHITE),
+                (_fmt_brl(avg_price), _WHITE),
+                (_fmt_brl(cost), _GREEN if cost > 0 else _MUTED),
             ]
 
             for col, (text, color) in enumerate(cells):
@@ -1723,7 +1736,7 @@ class InvestmentsPage(QWidget):
             cell_lay.setContentsMargins(4, 2, 4, 2)
             cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
             edit_btn = QPushButton()
-            edit_btn.setIcon(_svg_icon("edit", "#C8CAD8", 14))
+            edit_btn.setIcon(_svg_icon("edit", _LIGHT, 14))
             edit_btn.setFixedSize(32, 32)
             edit_btn.setToolTip("Editar ativo")
             edit_btn.clicked.connect(lambda _, aid=asset_id: self._open_edit_asset_dialog(aid))
@@ -1877,12 +1890,12 @@ class InvestmentsPage(QWidget):
         self._div_table.setRowCount(len(dividends))
         for row, d in enumerate(dividends):
             cells = [
-                (d.get("payment_date", ""), "#E8EAED"),
-                (d.get("ticker") or d.get("asset_name") or "—", "#4A9EFF"),
-                (_DIVIDEND_TYPE_DISPLAY.get(d.get("dividend_type", ""), d.get("dividend_type", "")), "#8B90A7"),
-                (_fmt_brl(float(d.get("amount_per_unit", 0))), "#E8EAED"),
-                (_fmt_brl(float(d.get("total_amount", 0))), "#00C896"),
-                (_fmt_brl(float(d.get("tax_withheld", 0))), "#FFB347" if float(d.get("tax_withheld", 0)) > 0 else "#8B90A7"),
+                (d.get("payment_date", ""), _WHITE),
+                (d.get("ticker") or d.get("asset_name") or "—", _BLUE),
+                (_DIVIDEND_TYPE_DISPLAY.get(d.get("dividend_type", ""), d.get("dividend_type", "")), _MUTED),
+                (_fmt_brl(float(d.get("amount_per_unit", 0))), _WHITE),
+                (_fmt_brl(float(d.get("total_amount", 0))), _GREEN),
+                (_fmt_brl(float(d.get("tax_withheld", 0))), _ORANGE if float(d.get("tax_withheld", 0)) > 0 else _MUTED),
             ]
             for col, (text, color) in enumerate(cells):
                 item = QTableWidgetItem(text)
@@ -2082,7 +2095,7 @@ class InvestmentsPage(QWidget):
         def _pct(v, suffix="%"):
             return f"{v:+.2f}{suffix}" if v is not None else "N/D"
 
-        alpha_color = "#00C896" if (alpha or 0) >= 0 else "#FF6B6B"
+        alpha_color = _GREEN if (alpha or 0) >= 0 else _RED
         self._rent_card_port.set_value(_pct(port_pct))
         self._rent_card_cdi.set_value(_pct(cdi_pct))
         self._rent_card_alpha._val.setStyleSheet(
@@ -2129,9 +2142,9 @@ class InvestmentsPage(QWidget):
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if col == 0:
-                    item.setForeground(QColor("#4A9EFF"))
+                    item.setForeground(QColor(_BLUE))
                 elif col in (4, 5, 6) and text != "N/D":
-                    item.setForeground(QColor("#FFB347"))
+                    item.setForeground(QColor(_ORANGE))
                 self._risk_table.setItem(row, col, item)
 
 
@@ -2167,7 +2180,7 @@ class _RiskMetricCard(QFrame):
 class _SummaryCard(QFrame):
     """Card compacto para exibir um indicador resumido (reutiliza estilo summaryCard)."""
 
-    def __init__(self, title: str, default_color: str = "#E8EAED") -> None:
+    def __init__(self, title: str, default_color: str = _WHITE) -> None:
         super().__init__()
         self.setObjectName("summaryCard")
         self._default_color = default_color
@@ -2212,7 +2225,7 @@ class LiquidityCumulativeCanvas(FigureCanvasQTAgg):
     A visualização acumulada responde: "se eu precisar de R$X em D+1, tenho?"
     """
 
-    _COLORS = ["#00C896", "#4A9EFF", "#FFB347", "#8B90A7"]
+    _COLORS = [_GREEN, _BLUE, _ORANGE, _MUTED]
     _LABELS = ["D+0\n(hoje)", "D+1\n(amanhã)", "D+2\n(B3)", "Vencimento"]
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -2229,7 +2242,7 @@ class LiquidityCumulativeCanvas(FigureCanvasQTAgg):
         ax.set_facecolor("#1E2138")
         ax.text(
             0.5, 0.5, "Sem dados de liquidez",
-            ha="center", va="center", color="#8B90A7",
+            ha="center", va="center", color=_MUTED,
             fontsize=10, transform=ax.transAxes,
         )
         ax.axis("off")
@@ -2260,18 +2273,18 @@ class LiquidityCumulativeCanvas(FigureCanvasQTAgg):
             ax.text(
                 val + total * 0.01, y_pos[i],
                 f"{formatted}  ({pct:.1f}%)",
-                va="center", color="#E8EAED", fontsize=8.5,
+                va="center", color=_WHITE, fontsize=8.5,
             )
 
         ax.set_yticks(y_pos)
-        ax.set_yticklabels(self._LABELS, color="#8B90A7", fontsize=8.5)
-        ax.set_xlabel("Valor acumulado disponível (R$)", color="#8B90A7", fontsize=8)
-        ax.tick_params(axis="x", colors="#8B90A7", labelsize=7.5)
+        ax.set_yticklabels(self._LABELS, color=_MUTED, fontsize=8.5)
+        ax.set_xlabel("Valor acumulado disponível (R$)", color=_MUTED, fontsize=8)
+        ax.tick_params(axis="x", colors=_MUTED, labelsize=7.5)
         ax.tick_params(axis="y", left=False)
         for spine in ax.spines.values():
             spine.set_visible(False)
-        ax.xaxis.label.set_color("#8B90A7")
-        ax.set_title("Liquidez acumulada por prazo", color="#C5CAE9", fontsize=9, pad=6)
+        ax.xaxis.label.set_color(_MUTED)
+        ax.set_title("Liquidez acumulada por prazo", color=_LIGHT, fontsize=9, pad=6)
         ax.set_xlim(0, total * 1.35)
 
         self._fig.tight_layout(pad=1.0)

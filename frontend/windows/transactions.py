@@ -65,6 +65,16 @@ from PyQt6.QtWidgets import (
 )
 
 from frontend.components.api_client import ApiClient, ApiError
+from frontend.components.colors import (
+    COLOR_ASSET      as _GREEN,
+    COLOR_EXPENSE    as _RED,
+    COLOR_INVESTMENT as _BLUE,
+    COLOR_WARNING    as _ORANGE,
+    COLOR_NEUTRAL    as _WHITE,
+    COLOR_BALANCE    as _LIGHT,
+    COLOR_MUTED      as _MUTED,
+    COLOR_ASSET_RGB, COLOR_EXPENSE_RGB, COLOR_INVESTMENT_RGB,
+)
 from frontend.components.icons import icon as _svg_icon, category_icon as _cat_icon
 from frontend.components.signals import app_signals
 
@@ -186,10 +196,10 @@ _NATURE_DISPLAY = {v: k for k, v in _NATURE_LABELS.items()}
 
 # Cores de badge por natureza (bg_dark, fg_text)
 _NATURE_BADGE_COLORS: dict[str, tuple[str, str]] = {
-    "essential":     ("#1A3A2A", "#00C896"),
-    "discretionary": ("#3A2800", "#FFB347"),
-    "investment":    ("#1A2A3A", "#4A9EFF"),
-    "transfer":      ("#2A2D3E", "#8B90A7"),
+    "essential":     ("#1A3A2A", _GREEN),
+    "discretionary": ("#3A2800", _ORANGE),
+    "investment":    ("#1A2A3A", _BLUE),
+    "transfer":      ("#2A2D3E", _MUTED),
 }
 
 # Auto-seleção de natureza pela categoria
@@ -242,15 +252,15 @@ _MONTHS_FULL = [
 
 # Configuração visual dos 5 tipos de lançamento
 _TYPE_CONFIG = {
-    "income":     {"icon": "💰", "label": "Receita",      "color": "#00C896",
+    "income":     {"icon": "💰", "label": "Receita",      "color": _GREEN,
                    "desc": "Salários, rendimentos e outras entradas"},
-    "debit":      {"icon": "💸", "label": "Débito",       "color": "#FF6B6B",
+    "debit":      {"icon": "💸", "label": "Débito",       "color": _RED,
                    "desc": "Despesas pagas com conta ou dinheiro"},
-    "credit":     {"icon": "💳", "label": "Crédito",      "color": "#FFB347",
+    "credit":     {"icon": "💳", "label": "Crédito",      "color": _ORANGE,
                    "desc": "Compras realizadas no cartão de crédito"},
-    "investment": {"icon": "📈", "label": "Investimento", "color": "#4A9EFF",
+    "investment": {"icon": "📈", "label": "Investimento", "color": _BLUE,
                    "desc": "Aportes em ativos e aplicações financeiras"},
-    "invoice":    {"icon": "🧾", "label": "Pag. Fatura",  "color": "#8B90A7",
+    "invoice":    {"icon": "🧾", "label": "Pag. Fatura",  "color": _MUTED,
                    "desc": "Pagamento de fatura do cartão de crédito"},
 }
 
@@ -953,7 +963,7 @@ class CashflowCanvas(FigureCanvas):
     def _style_axes(self) -> None:
         for ax in (self._ax, self._ax2):
             ax.set_facecolor(self._BG)
-            ax.tick_params(colors="#8B90A7", labelsize=8)
+            ax.tick_params(colors=_MUTED, labelsize=8)
             for spine in ax.spines.values():
                 spine.set_color(self._GRID)
         self._ax.grid(axis="y", color=self._GRID, linewidth=0.5, linestyle="--")
@@ -976,16 +986,16 @@ class CashflowCanvas(FigureCanvas):
         x = np.arange(len(labels))
         w = 0.4
 
-        self._ax.bar(x - w / 2, income,   width=w, color="#00C896", alpha=0.85, label="Receita")
-        self._ax.bar(x + w / 2, expenses, width=w, color="#FF6B6B", alpha=0.85, label="Despesa")
-        self._ax2.plot(x, running, color="#4A9EFF", linewidth=2, marker="o",
+        self._ax.bar(x - w / 2, income,   width=w, color=COLOR_ASSET_RGB,      alpha=0.85, label="Receita")
+        self._ax.bar(x + w / 2, expenses, width=w, color=COLOR_EXPENSE_RGB,    alpha=0.85, label="Despesa")
+        self._ax2.plot(x, running, color=COLOR_INVESTMENT_RGB, linewidth=2, marker="o",
                        markersize=4, label="Saldo acum.")
 
         self._ax.set_xticks(x)
-        self._ax.set_xticklabels(labels, rotation=30, ha="right", color="#8B90A7", fontsize=7)
-        self._ax.set_ylabel("R$", color="#8B90A7", fontsize=8)
-        self._ax2.set_ylabel("Saldo", color="#4A9EFF", fontsize=8)
-        self._ax2.tick_params(colors="#4A9EFF")
+        self._ax.set_xticklabels(labels, rotation=30, ha="right", color=_MUTED, fontsize=7)
+        self._ax.set_ylabel("R$", color=_MUTED, fontsize=8)
+        self._ax2.set_ylabel("Saldo", color=_BLUE, fontsize=8)
+        self._ax2.tick_params(colors=_BLUE)
 
         # Legenda combinada
         h1, l1 = self._ax.get_legend_handles_labels()
@@ -993,7 +1003,7 @@ class CashflowCanvas(FigureCanvas):
         self._ax.legend(
             h1 + h2, l1 + l2,
             facecolor="#1A1D2E", edgecolor="#2A2D3E",
-            labelcolor="#C8CAD8", fontsize=7, loc="upper right",
+            labelcolor=_LIGHT, fontsize=7, loc="upper right",
         )
 
         self._fig.tight_layout(pad=1.2)
@@ -1433,9 +1443,9 @@ class TransactionsPage(QWidget):
         # Cards de resumo
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
-        self._rec_monthly_card = self._make_summary_card("Comprometido/mês", "—", "#FF6B6B")
-        self._rec_annual_card  = self._make_summary_card("Comprometido/ano", "—", "#FFB347")
-        self._rec_count_card   = self._make_summary_card("Ativos",           "—", "#4A9EFF")
+        self._rec_monthly_card = self._make_summary_card("Comprometido/mês", "—", _RED)
+        self._rec_annual_card  = self._make_summary_card("Comprometido/ano", "—", _ORANGE)
+        self._rec_count_card   = self._make_summary_card("Ativos",           "—", _BLUE)
         for c in (self._rec_monthly_card, self._rec_annual_card, self._rec_count_card):
             summary_row.addWidget(c)
         outer.addLayout(summary_row)
@@ -1532,7 +1542,7 @@ class TransactionsPage(QWidget):
         self._cf_months_spin.setSuffix(" meses")
 
         self._cf_update_btn = QPushButton("  Atualizar")
-        self._cf_update_btn.setIcon(_svg_icon("refresh", "#C8CAD8", 14))
+        self._cf_update_btn.setIcon(_svg_icon("refresh", _LIGHT, 14))
         self._cf_update_btn.clicked.connect(self._reload_cashflow)
 
         controls.addWidget(mode_lbl)
@@ -1546,9 +1556,9 @@ class TransactionsPage(QWidget):
         # ── Cards de totais ─────────────────────────────────────────
         totals_row = QHBoxLayout()
         totals_row.setSpacing(12)
-        self._cf_income_card  = self._make_summary_card("Receita projetada",  "—", "#00C896")
-        self._cf_expense_card = self._make_summary_card("Despesa projetada",  "—", "#FF6B6B")
-        self._cf_balance_card = self._make_summary_card("Saldo do período",   "—", "#4A9EFF")
+        self._cf_income_card  = self._make_summary_card("Receita projetada",  "—", _GREEN)
+        self._cf_expense_card = self._make_summary_card("Despesa projetada",  "—", _RED)
+        self._cf_balance_card = self._make_summary_card("Saldo do período",   "—", _BLUE)
         for c in (self._cf_income_card, self._cf_expense_card, self._cf_balance_card):
             totals_row.addWidget(c)
         outer.addLayout(totals_row)
@@ -1662,7 +1672,7 @@ class TransactionsPage(QWidget):
         lay.setSpacing(8)
 
         self._prev_month_btn = QPushButton()
-        self._prev_month_btn.setIcon(_svg_icon("arrow_left", "#C8CAD8", 16))
+        self._prev_month_btn.setIcon(_svg_icon("arrow_left", _LIGHT, 16))
         self._prev_month_btn.setFixedSize(32, 32)
         self._prev_month_btn.setToolTip("Mês anterior")
         self._prev_month_btn.clicked.connect(self._on_prev_month)
@@ -1675,7 +1685,7 @@ class TransactionsPage(QWidget):
         )
 
         self._next_month_btn = QPushButton()
-        self._next_month_btn.setIcon(_svg_icon("arrow_right", "#C8CAD8", 16))
+        self._next_month_btn.setIcon(_svg_icon("arrow_right", _LIGHT, 16))
         self._next_month_btn.setFixedSize(32, 32)
         self._next_month_btn.setToolTip("Próximo mês")
         self._next_month_btn.clicked.connect(self._on_next_month)
@@ -1831,9 +1841,9 @@ class TransactionsPage(QWidget):
             lbl.setStyleSheet(f"color: {color}; font-weight: 600; font-size: 13px;")
             return lbl
 
-        self._total_income = _total_label("Receitas", "#00C896")
-        self._total_expense = _total_label("Despesas", "#FF6B6B")
-        self._total_balance = _total_label("Saldo", "#4A9EFF")
+        self._total_income = _total_label("Receitas", _GREEN)
+        self._total_expense = _total_label("Despesas", _RED)
+        self._total_balance = _total_label("Saldo", _BLUE)
 
         layout.addWidget(self._total_income)
         layout.addWidget(QLabel("|"))
@@ -2097,7 +2107,7 @@ class TransactionsPage(QWidget):
             if tx.get("transaction_type") in ("debit", "credit", "investment")
         )
         balance = income - expense
-        balance_color = "#00C896" if balance >= 0 else "#FF6B6B"
+        balance_color = _GREEN if balance >= 0 else _RED
 
         self._total_income.setText(f"Receitas: {_fmt_brl(income)}")
         self._total_expense.setText(f"Despesas: {_fmt_brl(expense)}")
@@ -2241,7 +2251,7 @@ class TransactionsPage(QWidget):
             ]
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
-                item.setForeground(QColor("#E8EAED" if col in (0, 1) else "#8B90A7"))
+                item.setForeground(QColor(_WHITE if col in (0, 1) else _MUTED))
                 if col in (_DEBT_COL_REMAINING, _DEBT_COL_INSTALLMENT):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._debt_table.setItem(row, col, item)
@@ -2254,13 +2264,13 @@ class TransactionsPage(QWidget):
             actions_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             edit_btn = QPushButton()
-            edit_btn.setIcon(_svg_icon("edit", "#C8CAD8", 14))
+            edit_btn.setIcon(_svg_icon("edit", _LIGHT, 14))
             edit_btn.setFixedSize(32, 32)
             edit_btn.setToolTip("Editar dívida")
             edit_btn.clicked.connect(lambda _, d=debt: self._open_edit_debt_dialog(d))
 
             del_btn = QPushButton()
-            del_btn.setIcon(_svg_icon("delete", "#FF6B6B", 14))
+            del_btn.setIcon(_svg_icon("delete", _RED, 14))
             del_btn.setFixedSize(32, 32)
             del_btn.setToolTip("Excluir dívida")
             del_btn.clicked.connect(lambda _, d=debt: self._delete_debt(d))
@@ -2419,7 +2429,7 @@ class TransactionsPage(QWidget):
                 if row_bg:
                     item.setBackground(QColor(row_bg))
                 if col == _REC_COL_AMOUNT:
-                    item.setForeground(QColor("#FF6B6B"))
+                    item.setForeground(QColor(_RED))
                 self._rec_table.setItem(row, col, item)
 
             # Botões de ação
@@ -2549,17 +2559,17 @@ class TransactionsPage(QWidget):
             "invoice":   "Fatura",
         }
         _EVENT_COLORS = {
-            "income":    "#00C896",
-            "recurring": "#FFB347",
-            "debt":      "#FF6B6B",
-            "invoice":   "#8B90A7",
+            "income":    _GREEN,
+            "recurring": _ORANGE,
+            "debt":      _RED,
+            "invoice":   _MUTED,
         }
 
         self._cf_events_table.setRowCount(len(events))
         for row, ev in enumerate(events):
             ev_type = ev.get("type", "")
             amount  = float(ev.get("amount", 0))
-            color   = _EVENT_COLORS.get(ev_type, "#C8CAD8")
+            color   = _EVENT_COLORS.get(ev_type, _LIGHT)
             cells = [
                 _fmt_date(ev.get("date", "")),
                 ev.get("description", ""),
@@ -2599,8 +2609,8 @@ def _icon_btn(icon_name: str, tooltip: str) -> tuple["QPushButton", "QWidget"]:
     lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
     btn = QPushButton()
     # escolhe cor do ícone conforme a ação
-    _color_map = {"edit": "#C8CAD8", "delete": "#FF6B6B", "view": "#4A9EFF", "pay": "#00C896"}
-    btn.setIcon(_svg_icon(icon_name, _color_map.get(icon_name, "#C8CAD8"), 14))
+    _color_map = {"edit": _LIGHT, "delete": _RED, "view": _BLUE, "pay": _GREEN}
+    btn.setIcon(_svg_icon(icon_name, _color_map.get(icon_name, _LIGHT), 14))
     btn.setFixedSize(32, 32)
     btn.setToolTip(tooltip)
     lay.addWidget(btn)
