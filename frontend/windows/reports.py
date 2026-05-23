@@ -29,6 +29,10 @@ import base64
 import io
 from collections import defaultdict
 
+import json
+import subprocess
+import sys
+
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextDocument
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog, QPageSetupDialog
@@ -38,6 +42,11 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGroupBox,
+    QListWidget,
+    QListWidgetItem,
+    QProgressBar,
+    QSizePolicy,
+    QSplitter,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -49,8 +58,15 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+# Diretório onde os PDFs gerados são armazenados
+_REPORTS_DIR = Path(__file__).parent.parent.parent / "data" / "reports"
+_HISTORY_FILE = _REPORTS_DIR / ".history.json"
+
 from frontend.components.api_client import ApiClient, ApiError
 from frontend.components.icons import icon as _svg_icon
+
+# Também importa o Path no topo (may already be there via calendar import)
+from pathlib import Path
 
 
 # ======================================================================
@@ -140,7 +156,12 @@ class ReportsPage(QWidget):
         self._client = ApiClient()
         self._worker: ReportWorker | None = None
         self._current_html = ""
+        self._current_data: dict = {}
         self._first_load = True
+        self._last_pdf_path: str | None = None
+
+        # Garante que o diretório de relatórios existe
+        _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
         # Debounce: aguarda 800 ms após a última mudança antes de gerar
         self._debounce_timer = QTimer(self)
@@ -268,16 +289,27 @@ class ReportsPage(QWidget):
         self._export_btn.clicked.connect(self._export_pdf)
         btn_row.addWidget(self._export_btn)
 
+        self._open_pdf_btn = QPushButton(" Abrir PDF")
+        self._open_pdf_btn.setIcon(_svg_icon("chart", "#C8CAD8", 14))
+        self._open_pdf_btn.setEnabled(False)
+        self._open_pdf_btn.clicked.connect(self._open_last_pdf)
+        btn_row.addWidget(self._open_pdf_btn)
+
         btn_row.addStretch()
         config_layout.addLayout(btn_row)
         main.addWidget(config_box)
 
-        # --- Status ---
-        self._status_label = QLabel("")
-        self._status_label.setObjectName("loadingLabel")
-        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_label.setVisible(False)
-        main.addWidget(self._status_label)
+        # --- Progress bar ---
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 0)   # indeterminate (marquee)
+        self._progress.setFixedHeight(4)
+        self._progress.setTextVisible(False)
+        self._progress.setStyleSheet(
+            "QProgressBar { background: #1E2235; border: none; border-radius: 2px; }"
+            "QProgressBar::chunk { background: #7B61FF; border-radius: 2px; }"
+        )
+        self._progress.setVisible(False)
+        main.addWidget(self._progress)
 
         # --- Preview ---
         preview_label = QLabel("Pré-visualização")
@@ -286,7 +318,7 @@ class ReportsPage(QWidget):
 
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
-        self._preview.setMinimumHeight(400)
+        self._preview.setMinimumHeight(380)
         self._preview.setStyleSheet(
             "QTextEdit { background: #1A1D27; color: #E8EAED; border: 1px solid #2E3250;"
             " border-radius: 8px; padding: 16px; font-family: 'Courier New', monospace; }"
@@ -294,8 +326,28 @@ class ReportsPage(QWidget):
         self._preview.setPlaceholderText("O relatório aparecerá aqui após a geração…")
         main.addWidget(self._preview)
 
+        # --- Histórico de PDFs ---
+        hist_label = QLabel("Relatórios Gerados")
+        hist_label.setObjectName("sectionTitle")
+        main.addWidget(hist_label)
+
+        self._history_list = QListWidget()
+        self._history_list.setFixedHeight(140)
+        self._history_list.setStyleSheet(
+            "QListWidget { background: #1A1D27; color: #E8EAED; border: 1px solid #2E3250;"
+            " border-radius: 8px; padding: 4px; }"
+            "QListWidget::item { padding: 6px 8px; border-radius: 4px; }"
+            "QListWidget::item:hover { background: #252840; }"
+            "QListWidget::item:selected { background: #2E3250; }"
+        )
+        self._history_list.itemDoubleClicked.connect(self._open_history_item)
+        main.addWidget(self._history_list)
+
         scroll.setWidget(content)
         outer.addWidget(scroll)
+
+        # Carrega histórico
+        self._refresh_history()
 
     # ------------------------------------------------------------------
     # Geração
@@ -318,9 +370,9 @@ class ReportsPage(QWidget):
             QMessageBox.warning(self, "Período inválido", "A data fim deve ser maior que a data início.")
             return
 
-        self._status_label.setText("Buscando dados…")
-        self._status_label.setVisible(True)
+        self._progress.setVisible(True)
         self._export_btn.setEnabled(False)
+        self._open_pdf_btn.setEnabled(False)
 
         self._worker = ReportWorker(self._client, report_key, start, end)
         self._worker.data_ready.connect(self._on_data_ready)
@@ -328,14 +380,16 @@ class ReportsPage(QWidget):
         self._worker.start()
 
     def _on_data_ready(self, data: dict) -> None:
-        self._status_label.setVisible(False)
+        self._progress.setVisible(False)
+        self._current_data = data
         html = self._build_html(data)
         self._current_html = html
         self._preview.setHtml(html)
         self._export_btn.setEnabled(True)
 
     def _on_error(self, message: str) -> None:
-        self._status_label.setText(f"Erro: {message}")
+        self._progress.setVisible(False)
+        self._preview.setPlainText(f"Erro ao buscar dados: {message}")
         self._export_btn.setEnabled(False)
 
     # ------------------------------------------------------------------
@@ -776,31 +830,159 @@ class ReportsPage(QWidget):
     # ------------------------------------------------------------------
 
     def _export_pdf(self) -> None:
+        """Salva o relatório em PDF — tenta usar reportlab; cai para QPrinter."""
         if not self._current_html:
             return
+
+        checked_btn = self._type_group.checkedButton()
+        report_key = checked_btn.property("report_key") if checked_btn else "lancamentos"
+
+        default_name = (
+            f"relatorio_{report_key}_{date.today().strftime('%Y%m%d_%H%M%S')}.pdf"
+        )
+        default_path = str(_REPORTS_DIR / default_name)
 
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Salvar relatório em PDF",
-            f"relatorio_financehub_{date.today().strftime('%Y%m%d')}.pdf",
+            default_path,
             "Arquivos PDF (*.pdf)",
         )
         if not path:
             return
 
-        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
-        printer.setOutputFileName(path)
+        # Tenta reportlab para relatórios com dados estruturados
+        try:
+            self._export_with_reportlab(path, report_key)
+        except Exception:
+            # Fallback: QPrinter / HTML → PDF
+            self._export_with_qprinter(path)
 
-        doc = QTextDocument()
-        doc.setHtml(self._current_html)
-        doc.print(printer)
+        self._last_pdf_path = path
+        self._open_pdf_btn.setEnabled(True)
+        self._add_to_history(path, report_key)
+        self._refresh_history()
 
         QMessageBox.information(
             self,
             "PDF salvo",
-            f"Relatório salvo com sucesso em:\n{path}",
+            f"Relatório salvo com sucesso!\n{path}",
         )
+
+    def _export_with_reportlab(self, path: str, report_key: str) -> None:
+        """Gera PDF com reportlab usando os dados já buscados."""
+        from backend.services.report_service import (
+            generate_annual_report,
+            generate_monthly_report,
+            generate_portfolio_report,
+        )
+
+        data = self._current_data
+        if report_key in ("lancamentos", "resumo"):
+            generate_monthly_report(data, path)
+        elif report_key == "investimentos":
+            generate_portfolio_report(data, path)
+        else:
+            # Fallback HTML para tipos sem template reportlab
+            self._export_with_qprinter(path)
+
+    def _export_with_qprinter(self, path: str) -> None:
+        """Fallback: imprime HTML via QPrinter."""
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(path)
+        doc = QTextDocument()
+        doc.setHtml(self._current_html)
+        doc.print(printer)
+
+    def _open_last_pdf(self) -> None:
+        """Abre o último PDF gerado com o visualizador padrão do SO."""
+        if self._last_pdf_path and Path(self._last_pdf_path).exists():
+            self._open_pdf(self._last_pdf_path)
+
+    def _open_pdf(self, path: str) -> None:
+        """Abre um arquivo PDF com o aplicativo padrão do sistema operacional."""
+        try:
+            if sys.platform.startswith("linux"):
+                subprocess.Popen(["xdg-open", path])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["start", "", path], shell=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "Erro ao abrir PDF", str(exc))
+
+    def _open_history_item(self, item: QListWidgetItem) -> None:
+        """Duplo clique na lista de histórico → abre o PDF."""
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path and Path(path).exists():
+            self._open_pdf(path)
+        else:
+            QMessageBox.information(
+                self, "Arquivo não encontrado",
+                "O arquivo PDF não existe mais no disco."
+            )
+
+    # ── Histórico ─────────────────────────────────────────────────────────
+
+    def _add_to_history(self, path: str, report_type: str) -> None:
+        """Registra o PDF gerado no arquivo de histórico JSON."""
+        history = self._load_history()
+        entry = {
+            "path": path,
+            "type": report_type,
+            "generated_at": date.today().isoformat(),
+            "filename": Path(path).name,
+        }
+        # Remove duplicatas do mesmo arquivo (e.g., sobrescrever)
+        history = [h for h in history if h.get("path") != path]
+        history.insert(0, entry)
+        # Mantém no máximo 20 entradas
+        history = history[:20]
+        try:
+            _HISTORY_FILE.write_text(
+                json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    def _load_history(self) -> list[dict]:
+        """Carrega o histórico de PDFs gerados."""
+        if _HISTORY_FILE.exists():
+            try:
+                return json.loads(_HISTORY_FILE.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return []
+        return []
+
+    def _refresh_history(self) -> None:
+        """Atualiza o widget de histórico com os PDFs gerados."""
+        self._history_list.clear()
+        history = self._load_history()
+        _TYPE_LABELS = {
+            "lancamentos": "Lançamentos",
+            "resumo": "Resumo Mensal",
+            "investimentos": "Carteira",
+            "padrão_gastos": "Padrão de Gastos",
+            "custo_oportunidade": "Custo de Oportunidade",
+        }
+        for entry in history:
+            path = entry.get("path", "")
+            exists = Path(path).exists()
+            type_label = _TYPE_LABELS.get(entry.get("type", ""), entry.get("type", ""))
+            date_str = entry.get("generated_at", "")
+            filename = entry.get("filename", Path(path).name)
+
+            icon = "📄" if exists else "❌"
+            text = f"{icon}  {type_label} — {filename} ({date_str})"
+
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            if not exists:
+                item.setForeground(
+                    __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor("#666888")
+                )
+            self._history_list.addItem(item)
 
 
 # ======================================================================
