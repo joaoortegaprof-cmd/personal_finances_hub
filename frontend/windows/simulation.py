@@ -477,6 +477,8 @@ class RetirementTab(QWidget):
             self._portfolio_spin.setValue(net_worth)
         if avg_inv > 0:
             self._contribution_spin.setValue(avg_inv)
+        # Dispara a simulação automaticamente com os dados pré-preenchidos
+        QTimer.singleShot(150, self._run_simulation)
 
     def _load_fire(self) -> None:
         if self._fire_worker and self._fire_worker.isRunning():

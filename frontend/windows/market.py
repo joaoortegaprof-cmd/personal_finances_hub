@@ -25,7 +25,7 @@ matplotlib.use("qtagg")  # noqa: E402
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -234,6 +235,195 @@ class FundamentalsWorker(QThread):
             self.error_occurred.emit(str(exc))
         except Exception as exc:
             self.error_occurred.emit(f"Erro inesperado: {exc}")
+
+
+# ======================================================================
+# Busca avulsa de ticker
+# ======================================================================
+
+
+class TickerLookupWorker(QThread):
+    """Busca cotação atual + histórico de 30 dias de um ticker avulso."""
+
+    data_ready     = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient, ticker: str) -> None:
+        super().__init__()
+        self._client = client
+        self._ticker = ticker
+
+    def run(self) -> None:
+        try:
+            quote   = self._client.get_market_quote(self._ticker)
+            history: dict = {}
+            try:
+                history = self._client.get_market_history(self._ticker)
+            except Exception:
+                pass
+            self.data_ready.emit({"quote": quote, "history": history, "ticker": self._ticker})
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Ticker não encontrado: {exc}")
+
+
+class SparklineCanvas(FigureCanvasQTAgg):
+    """Mini gráfico de linha (30 dias) para o resultado de busca de ticker."""
+
+    _BG = "#222640"
+
+    def __init__(self, parent=None) -> None:
+        fig = Figure(figsize=(5, 1.4), facecolor=self._BG)
+        super().__init__(fig)
+        self.setParent(parent)
+        self._fig = fig
+        self._ax  = fig.add_subplot(111)
+        self._ax.set_facecolor(self._BG)
+        self.setFixedHeight(80)
+
+    def plot(self, closes: list[float], positive: bool) -> None:
+        self._ax.clear()
+        self._ax.set_facecolor(self._BG)
+        if not closes:
+            self._fig.canvas.draw_idle()
+            return
+        color = _C_POS if positive else _C_NEG
+        x = range(len(closes))
+        self._ax.plot(list(x), closes, color=color, linewidth=1.5)
+        self._ax.fill_between(list(x), closes, min(closes),
+                               color=color, alpha=0.15)
+        self._ax.set_xticks([])
+        self._ax.set_yticks([])
+        for spine in self._ax.spines.values():
+            spine.set_visible(False)
+        self._fig.tight_layout(pad=0.2)
+        self._fig.canvas.draw_idle()
+
+
+class TickerResultCard(QFrame):
+    """
+    Card expansível que exibe o resultado de uma busca de ticker:
+    nome, preço atual, variação do dia, sparkline 30 dias e botão
+    para abrir o dialog de comparação com benchmarks.
+    """
+
+    compare_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("summaryCard")
+        self.setVisible(False)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(20, 14, 20, 14)
+        outer.setSpacing(20)
+
+        # Coluna esquerda — info textual
+        left = QVBoxLayout()
+        left.setSpacing(4)
+
+        self._ticker_lbl = QLabel("—")
+        self._ticker_lbl.setStyleSheet(
+            f"color: {_C_ACCENT}; font-size: 18px; font-weight: 700;"
+        )
+        self._name_lbl = QLabel("")
+        self._name_lbl.setStyleSheet(f"color: {_C_MUTED}; font-size: 11px;")
+        self._name_lbl.setWordWrap(True)
+
+        self._price_lbl = QLabel("—")
+        self._price_lbl.setStyleSheet(
+            f"color: {_C_WHITE}; font-size: 22px; font-weight: 700;"
+        )
+
+        row = QHBoxLayout()
+        self._change_lbl = QLabel("")
+        self._change_lbl.setStyleSheet(f"color: {_C_MUTED}; font-size: 12px;")
+        self._vol_lbl = QLabel("")
+        self._vol_lbl.setStyleSheet(f"color: {_C_MUTED}; font-size: 11px;")
+        row.addWidget(self._change_lbl)
+        row.addStretch()
+        row.addWidget(self._vol_lbl)
+
+        compare_btn = QPushButton("Ver vs benchmarks →")
+        compare_btn.setStyleSheet(
+            f"color: {_C_ACCENT}; background: transparent; border: none;"
+            " font-size: 11px; text-align: left; padding: 0;"
+        )
+        compare_btn.clicked.connect(lambda: self.compare_requested.emit(self._current_ticker))
+        self._current_ticker = ""
+
+        left.addWidget(self._ticker_lbl)
+        left.addWidget(self._name_lbl)
+        left.addWidget(self._price_lbl)
+        left.addLayout(row)
+        left.addWidget(compare_btn)
+        left.addStretch()
+        outer.addLayout(left, stretch=1)
+
+        # Coluna direita — sparkline
+        self._sparkline = SparklineCanvas()
+        outer.addWidget(self._sparkline, stretch=2)
+
+    def display(self, data: dict) -> None:
+        """Popula o card com os dados retornados pelo TickerLookupWorker."""
+        ticker  = data.get("ticker", "")
+        quote   = data.get("quote", {})
+        history = data.get("history", {})
+        self._current_ticker = ticker
+
+        self._ticker_lbl.setText(ticker.upper())
+        self._name_lbl.setText(quote.get("name") or quote.get("long_name") or "")
+
+        price = quote.get("price")
+        if price is not None:
+            self._price_lbl.setText(
+                f"R$ {float(price):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            )
+
+        change_pct = quote.get("change_pct")
+        if change_pct is not None:
+            cp = float(change_pct)
+            sign  = "+" if cp >= 0 else ""
+            color = _C_POS if cp >= 0 else _C_NEG
+            self._change_lbl.setText(f"{sign}{cp:.2f}% hoje")
+            self._change_lbl.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: 600;")
+        else:
+            self._change_lbl.setText("")
+
+        # Volume
+        vol = quote.get("volume")
+        if vol:
+            self._vol_lbl.setText(f"Vol: {int(vol):,}".replace(",", "."))
+        else:
+            self._vol_lbl.setText("")
+
+        # Sparkline — extrair lista de closes do histórico
+        # A API retorna {"points": [{"date": ..., "price": ...}]}
+        # Mas também tratamos variantes {"closes": [...]} e {"data": [{"close": ...}]}
+        closes: list[float] = []
+        if isinstance(history, dict):
+            raw_closes = history.get("closes") or history.get("close") or []
+            if isinstance(raw_closes, list) and raw_closes:
+                closes = [float(v) for v in raw_closes if v is not None]
+            else:
+                # Formato principal da API: {"points": [{"price": "44.48", ...}]}
+                points = history.get("points") or history.get("data") or []
+                closes = [
+                    float(p["price"])
+                    for p in points
+                    if p.get("price") is not None
+                ] or [
+                    float(p["close"])
+                    for p in points
+                    if p.get("close") is not None
+                ]
+
+        positive = (change_pct or 0) >= 0
+        self._sparkline.plot(closes, positive)
+        self.setVisible(True)
 
 
 # ======================================================================
@@ -698,6 +888,7 @@ class MarketPage(QWidget):
         super().__init__()
         self._client = ApiClient()
         self._worker: PortfolioQuotesWorker | None = None
+        self._lookup_worker: TickerLookupWorker | None = None
         self._sections: dict[str, dict] = {}
         self._build_ui()
         self._load_portfolio()
@@ -734,6 +925,34 @@ class MarketPage(QWidget):
         refresh_btn.clicked.connect(self._load_portfolio)
         hdr.addWidget(refresh_btn)
         main.addLayout(hdr)
+
+        # ── Busca avulsa de ticker ────────────────────────────────────────
+        search_row = QHBoxLayout()
+        search_row.setSpacing(8)
+
+        self._ticker_input = QLineEdit()
+        self._ticker_input.setPlaceholderText("Buscar ticker… ex: PETR4, BOVA11, BTC-USD")
+        self._ticker_input.setFixedHeight(36)
+        self._ticker_input.setMaxLength(20)
+        self._ticker_input.returnPressed.connect(self._search_ticker)
+        search_row.addWidget(self._ticker_input, stretch=1)
+
+        search_btn = QPushButton("Buscar")
+        search_btn.setProperty("class", "primary")
+        search_btn.setFixedHeight(36)
+        search_btn.clicked.connect(self._search_ticker)
+        search_row.addWidget(search_btn)
+
+        self._search_status = QLabel("")
+        self._search_status.setStyleSheet(f"color: {_C_MUTED}; font-size: 11px;")
+        search_row.addWidget(self._search_status)
+
+        main.addLayout(search_row)
+
+        # Card de resultado de busca (oculto até uma busca ser feita)
+        self._ticker_result = TickerResultCard()
+        self._ticker_result.compare_requested.connect(self._open_benchmark_for_ticker)
+        main.addWidget(self._ticker_result)
 
         # Card de resumo
         self._summary_frame = QFrame()
@@ -975,6 +1194,42 @@ class MarketPage(QWidget):
             dlg = BenchmarkDialog(entry, self._client, parent=self)
         else:
             dlg = FundamentalsDialog(entry, self._client, parent=self)
+        dlg.exec()
+
+    # ------------------------------------------------------------------
+    # Busca avulsa de ticker
+    # ------------------------------------------------------------------
+
+    def _search_ticker(self) -> None:
+        ticker = self._ticker_input.text().strip().upper()
+        if not ticker:
+            return
+
+        # Evita dupla execução enquanto um worker já roda
+        if self._lookup_worker and self._lookup_worker.isRunning():
+            return
+
+        self._search_status.setText("Buscando…")
+        self._ticker_result.setVisible(False)
+
+        self._lookup_worker = TickerLookupWorker(self._client, ticker)
+        self._lookup_worker.data_ready.connect(self._on_lookup_ready)
+        self._lookup_worker.error_occurred.connect(self._on_lookup_error)
+        self._lookup_worker.start()
+
+    def _on_lookup_ready(self, data: dict) -> None:
+        self._search_status.setText("")
+        self._ticker_result.display(data)
+
+    def _on_lookup_error(self, msg: str) -> None:
+        self._search_status.setText(f"Não encontrado: {msg}")
+        # Limpa resultado anterior
+        self._ticker_result.setVisible(False)
+
+    def _open_benchmark_for_ticker(self, ticker: str) -> None:
+        """Abre o BenchmarkDialog para um ticker buscado avulsamente."""
+        entry = {"ticker": ticker, "name": ticker, "asset_type": "acao"}
+        dlg = BenchmarkDialog(entry, self._client, parent=self)
         dlg.exec()
 
     def _on_error(self, msg: str) -> None:
