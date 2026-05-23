@@ -61,7 +61,8 @@ from PyQt6.QtWidgets import (
 from frontend.components.api_client import ApiClient, ApiError
 from frontend.components.colors import (
     COLOR_ASSET, COLOR_EXPENSE, COLOR_INVESTMENT, COLOR_WARNING,
-    COLOR_NEUTRAL, COLOR_MUTED, COLOR_BG, COLOR_GRID,
+    COLOR_INCOME, COLOR_NEUTRAL, COLOR_PATRIMONY, COLOR_BALANCE,
+    COLOR_MUTED, COLOR_BG, COLOR_GRID,
     COLOR_STOCK, COLOR_FII, COLOR_ETF, COLOR_TREASURY,
     COLOR_FIXED_INCOME, COLOR_CRYPTO, COLOR_INTERNATIONAL,
     COLOR_PENSION, COLOR_OTHER, COLOR_CASH,
@@ -261,6 +262,8 @@ def _build_monthly_series(
     cutoff_year  = today.year  - (months_back // 12 + 1)
     cutoff_month = today.month
 
+    investment_map: dict[tuple[int, int], float] = defaultdict(float)
+
     for tx in transactions:
         try:
             d = date.fromisoformat(str(tx["transaction_date"]))
@@ -280,6 +283,8 @@ def _build_monthly_series(
             income_map[key] += amount
         elif tx_type in ("debit", "expense", "transfer"):
             expense_map[key] += amount
+        elif tx_type == "investment":
+            investment_map[key] += amount
         # invoice payments: ignorados (já estão no crédito do cartão)
 
     months: list[tuple[int, int]] = []
@@ -292,10 +297,11 @@ def _build_monthly_series(
 
     return [
         {
-            "label":   f"{_MONTH_ABBR[m - 1]}/{str(y)[2:]}",
-            "income":  income_map.get((y, m), 0.0),
-            "expense": expense_map.get((y, m), 0.0),
-            "balance": income_map.get((y, m), 0.0) - expense_map.get((y, m), 0.0),
+            "label":      f"{_MONTH_ABBR[m - 1]}/{str(y)[2:]}",
+            "income":     income_map.get((y, m), 0.0),
+            "expense":    expense_map.get((y, m), 0.0),
+            "investment": investment_map.get((y, m), 0.0),
+            "balance":    income_map.get((y, m), 0.0) - expense_map.get((y, m), 0.0),
         }
         for y, m in months
     ]
@@ -409,35 +415,40 @@ class BarsCanvas(FigureCanvas):
         ax.clear()
         self._style_axes(ax)
 
-        labels   = [d["label"]   for d in monthly]
-        incomes  = [d.get("income",  d.get("value", 0)) for d in monthly]
-        expenses = [d.get("expense", 0)                 for d in monthly]
-        balances = [d.get("balance", inc - exp)         for d, inc, exp
-                    in zip(monthly, incomes, expenses)]
+        labels      = [d["label"]   for d in monthly]
+        incomes     = [d.get("income",      d.get("value", 0)) for d in monthly]
+        expenses    = [d.get("expense",     0)                  for d in monthly]
+        investments = [d.get("investment",  0)                  for d in monthly]
+        balances    = [d.get("balance", i - e) for d, i, e in zip(monthly, incomes, expenses)]
 
         x     = np.arange(len(labels))
-        width = 0.35
+        # 3 barras por mês: cada uma tem largura 0.22, centradas em x
+        w = 0.22
+        offsets = (-w, 0, w)
 
-        ax.bar(x - width / 2, incomes,  width, color=_GREEN_RGB, alpha=0.88,
-               label="Receitas", zorder=3)
-        ax.bar(x + width / 2, expenses, width, color=_RED_RGB,   alpha=0.88,
-               label="Despesas", zorder=3)
+        ax.bar(x + offsets[0], incomes,     w, color=_GREEN_RGB,      alpha=0.88,
+               label="Receitas",     zorder=3)
+        ax.bar(x + offsets[1], expenses,    w, color=_RED_RGB,         alpha=0.88,
+               label="Despesas",     zorder=3)
+        ax.bar(x + offsets[2], investments, w, color=_BLUE_RGB,        alpha=0.88,
+               label="Investimentos", zorder=3)
 
-        # Linha de saldo com marcadores
-        ax.plot(x, balances, color=(1.0, 1.0, 1.0, 0.85), linewidth=1.5,
-                marker="o", markersize=3, zorder=4, label="Saldo")
+        # Linha de saldo tracejada
+        ax.plot(x, balances, color=(1.0, 1.0, 1.0, 0.75), linewidth=1.2,
+                linestyle="--", marker="o", markersize=3, zorder=4, label="Saldo")
 
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, fontsize=9)
+        ax.set_xticklabels(labels, fontsize=8)
         ax.yaxis.set_major_formatter(
             plt.FuncFormatter(lambda v, _: f"R$ {v:,.0f}".replace(",", "."))
         )
         ax.axhline(0, color=_GRID_RGB, linewidth=0.8, zorder=2)
 
-        leg = ax.legend(
-            loc="upper left", fontsize=8,
+        ax.legend(
+            loc="upper left", fontsize=7,
             facecolor=_BG_RGB, labelcolor=_TEXT_RGB,
             framealpha=0.85, edgecolor=_GRID_RGB,
+            ncol=4,
         )
 
         self._fig.tight_layout(pad=0.4)
@@ -1115,31 +1126,45 @@ class DashboardPage(QWidget):
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._content_layout.addWidget(self._loading_label)
 
-        # ── Linha 1: 4 cards patrimoniais ──────────────────────────────
+        # ── Linha 1: 4 cards patrimoniais (ordem especificada) ─────────
+        # 1. Patrimônio Total → COLOR_PATRIMONY (branco)
+        # 2. Patrimônio D+0  → COLOR_BALANCE   (cinza claro)
+        # 3. Reserva Emerg.  → condicional verde/laranja/vermelho
+        # 4. Score de Saúde  → condicional verde/laranja/vermelho
         row1 = QHBoxLayout()
         row1.setSpacing(16)
-        self._card_d0         = SummaryCard("Patrimônio D+0",       "#4A9EFF", accent="#4A9EFF", icon_name="wallet")
-        self._card_patrimonio = SummaryCard("Patrimônio Total",      "#4A9EFF", accent="#4A9EFF", icon_name="trending_up")
-        self._card_reserva    = SummaryCard("Reserva de Emergência", "#00C896", accent="#00C896", icon_name="dollar")
-        self._card_score      = SummaryCard("Score de Saúde",        "#00C896", accent="#A78BFA", icon_name="check")
-        for c in [self._card_d0, self._card_patrimonio, self._card_reserva, self._card_score]:
+        self._card_patrimonio = SummaryCard("Patrimônio Total",      COLOR_PATRIMONY, accent=COLOR_INVESTMENT,  icon_name="trending_up")
+        self._card_d0         = SummaryCard("Patrimônio D+0",        COLOR_BALANCE,   accent=COLOR_INVESTMENT,  icon_name="wallet")
+        self._card_reserva    = SummaryCard("Reserva de Emergência", COLOR_ASSET,     accent=COLOR_ASSET,       icon_name="dollar")
+        self._card_score      = SummaryCard("Score de Saúde",        COLOR_ASSET,     accent=COLOR_PENSION,     icon_name="check")
+        for c in [self._card_patrimonio, self._card_d0, self._card_reserva, self._card_score]:
             c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             c.setVisible(False)
             row1.addWidget(c)
         self._content_layout.addLayout(row1)
 
         # ── Linha 2: 4 cards mensais ───────────────────────────────────
+        # 5. Receitas      → COLOR_INCOME  (verde)
+        # 6. Despesas      → COLOR_EXPENSE (vermelho)
+        # 7. Investimentos → COLOR_INVESTMENT (azul) — novo
+        # 8. Saldo         → condicional verde/vermelho
         row2 = QHBoxLayout()
         row2.setSpacing(16)
-        self._card_receitas  = SummaryCard("Receitas do Mês",  "#00C896", accent="#00C896", icon_name="income")
-        self._card_despesas  = SummaryCard("Despesas do Mês",  "#FF6B6B", accent="#FF6B6B", icon_name="expense")
-        self._card_saldo     = SummaryCard("Saldo do Mês",     "#4A9EFF", accent="#4A9EFF", icon_name="transfer")
-        self._card_essential = SummaryCard("Custo Essencial",  "#FFB347", accent="#FFB347", icon_name="card")
-        for c in [self._card_receitas, self._card_despesas, self._card_saldo, self._card_essential]:
+        self._card_receitas     = SummaryCard("Receitas do Mês",      COLOR_INCOME,     accent=COLOR_INCOME,     icon_name="income")
+        self._card_despesas     = SummaryCard("Despesas do Mês",      COLOR_EXPENSE,    accent=COLOR_EXPENSE,    icon_name="expense")
+        self._card_investimentos = SummaryCard("Investimentos do Mês", COLOR_INVESTMENT, accent=COLOR_INVESTMENT, icon_name="trending_up")
+        self._card_saldo        = SummaryCard("Saldo do Mês",         COLOR_ASSET,      accent=COLOR_ASSET,      icon_name="transfer")
+        for c in [self._card_receitas, self._card_despesas, self._card_investimentos, self._card_saldo]:
             c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             c.setVisible(False)
             row2.addWidget(c)
         self._content_layout.addLayout(row2)
+
+        # ── Custo Essencial — card separado abaixo da linha 2 ──────────
+        self._card_essential = SummaryCard("Custo Essencial", COLOR_WARNING, accent=COLOR_WARNING, icon_name="card")
+        self._card_essential.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._card_essential.setVisible(False)
+        # Adicionado no final da lista mas não numa linha separada — reutilizado inline abaixo
 
         # ── Seção de dívidas ───────────────────────────────────────────
         self._debts_title = QLabel("Dívidas e Financiamentos")
@@ -1312,50 +1337,61 @@ class DashboardPage(QWidget):
 
         # ── Linha 1 ────────────────────────────────────────────────────
 
-        # D+0: saldo em contas (proxy — idealmente viria de /portfolio/liquidity)
-        d0 = float(net_worth.get("account_balance", 0))
-        self._card_d0.set_value(
-            _fmt_brl(d0),
-            color="#4A9EFF",
-            sub="Liquidez imediata (contas)",
-        )
-
+        # ── Linha 1 — Patrimônio ───────────────────────────────────────
         nw = float(net_worth.get("net_worth", 0))
         self._card_patrimonio.set_value(
             _fmt_brl(nw),
-            color="#4A9EFF" if nw >= 0 else "#FF6B6B",
+            color=COLOR_PATRIMONY if nw >= 0 else COLOR_EXPENSE,
             sub=f"Ativos: {_fmt_brl(float(net_worth.get('total_assets', 0)))}",
         )
 
-        ef_saldo   = float(emergency_fund.get("saldo_total", 0))
-        ef_meses   = float(emergency_fund.get("meses_cobertos", 0))
+        d0 = float(net_worth.get("account_balance", 0))
+        self._card_d0.set_value(
+            _fmt_brl(d0),
+            color=COLOR_BALANCE,
+            sub="Liquidez imediata (contas)",
+        )
+
+        ef_saldo = float(emergency_fund.get("saldo_total", 0))
+        ef_meses = float(emergency_fund.get("meses_cobertos", 0))
         if ef_meses >= 6:
-            ef_color, ef_status = "#00C896", f"{ef_meses:.1f} meses cobertos ✓"
+            ef_color, ef_status = COLOR_ASSET,   f"{ef_meses:.1f} meses cobertos ✓"
         elif ef_meses >= 3:
-            ef_color, ef_status = "#FFB347", f"{ef_meses:.1f} meses cobertos"
+            ef_color, ef_status = COLOR_WARNING, f"{ef_meses:.1f} meses cobertos"
         else:
-            ef_color, ef_status = "#FF6B6B", f"{ef_meses:.1f} meses cobertos ⚠"
+            ef_color, ef_status = COLOR_EXPENSE, f"{ef_meses:.1f} meses cobertos ⚠"
         self._card_reserva.set_value(_fmt_brl(ef_saldo), color=ef_color, sub=ef_status)
 
         score = int(health.get("total", 0))
-        score_color = "#00C896" if score >= 60 else ("#FFB347" if score >= 40 else "#FF6B6B")
+        if score >= 70:
+            score_color = COLOR_ASSET
+        elif score >= 40:
+            score_color = COLOR_WARNING
+        else:
+            score_color = COLOR_EXPENSE
         self._card_score.set_value(f"{score} / 100", color=score_color)
 
-        # ── Linha 2 ────────────────────────────────────────────────────
-
-        income  = float(monthly.get("income", 0))
+        # ── Linha 2 — Fluxo mensal ─────────────────────────────────────
+        income  = float(monthly.get("income",  0))
         expense = float(monthly.get("expense", 0))
         balance = float(monthly.get("balance", 0))
         ref     = monthly.get("reference_month", "")
+        savings_rate = float(monthly.get("savings_rate", 0))
 
-        self._card_receitas.set_value(_fmt_brl(income),  color="#00C896", sub=ref)
+        self._card_receitas.set_value(_fmt_brl(income), color=COLOR_INCOME, sub=ref)
         self._card_despesas.set_value(
-            _fmt_brl(expense), color="#FF6B6B",
-            sub=f"Taxa poupança: {float(monthly.get('savings_rate', 0)):.1f}%",
+            _fmt_brl(expense), color=COLOR_EXPENSE,
+            sub=f"Taxa poupança: {savings_rate:.1f}%",
+        )
+        # Investimentos do mês: vem do monthly_summary se disponível, senão 0
+        inv_month = float(monthly.get("investment", monthly.get("investments", 0)))
+        self._card_investimentos.set_value(
+            _fmt_brl(inv_month), color=COLOR_INVESTMENT,
+            sub=ref,
         )
         self._card_saldo.set_value(
             _fmt_brl(balance),
-            color="#00C896" if balance >= 0 else "#FF6B6B",
+            color=COLOR_ASSET if balance >= 0 else COLOR_EXPENSE,
             sub=ref,
         )
 
@@ -1363,7 +1399,7 @@ class DashboardPage(QWidget):
         ec_avg = float(essential_cost.get("monthly_average", 0))
         self._card_essential.set_value(
             _fmt_brl(ec_avg),
-            color="#4A9EFF",
+            color=COLOR_INVESTMENT,
             sub="Média dos últimos 3 meses",
         )
 
@@ -1423,12 +1459,13 @@ class DashboardPage(QWidget):
 
     def _all_cards(self) -> list[SummaryCard]:
         return [
-            self._card_d0,
             self._card_patrimonio,
+            self._card_d0,
             self._card_reserva,
             self._card_score,
             self._card_receitas,
             self._card_despesas,
+            self._card_investimentos,
             self._card_saldo,
             self._card_essential,
         ]
