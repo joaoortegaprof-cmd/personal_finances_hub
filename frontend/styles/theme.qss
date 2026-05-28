@@ -494,7 +494,7 @@ QDoubleSpinBox {
     color: #FFFFFF;
     font-size: 13px;
     font-weight: 700;
-    min-height: 40px;   /* aumentado de 32 → 40 px */
+    min-height: 48px;
 }
 
 QSpinBox:focus,
@@ -509,8 +509,8 @@ QDoubleSpinBox::up-button,
 QDoubleSpinBox::down-button {
     background-color: #3D4466;
     border: none;
-    width: 36px;        /* aumentado de 32 → 36 px */
-    height: 20px;       /* aumentado de 16 → 20 px — zona de clique mais confortável */
+    width: 36px;
+    height: 24px;       /* 24 × 2 = 48 px → alinha com min-height do spinbox */
     border-radius: 4px;
 }
 
@@ -538,4 +538,26 @@ QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
     width: 10px;        /* aumentado de 8 → 10 px */
     height: 10px;
+}
+
+/* ---- Botões de período (BenchmarkDialog) ------------------- */
+QPushButton[class="period-btn"] {
+    min-width: 48px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #3D4166;
+    background: transparent;
+    color: #C8CAD8;
+    font-size: 11px;
+}
+
+QPushButton[class="period-btn"]:checked {
+    background: #4A9EFF;
+    color: #FFFFFF;
+    border-color: #4A9EFF;
+}
+
+QPushButton[class="period-btn"]:hover:!checked {
+    background: #2A2E4A;
+    color: #FFFFFF;
 }

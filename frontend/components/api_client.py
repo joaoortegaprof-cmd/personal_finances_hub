@@ -218,6 +218,13 @@ class ApiClient:
         """
         return self._get("/portfolio/risk-analysis")
 
+    def get_portfolio_by_sector(self) -> dict:
+        """
+        Retorna a distribuição da carteira agrupada por setor (ex: Energia,
+        Financeiro, FIIs) com total investido e percentual do portfólio.
+        """
+        return self._get("/portfolio/by-sector")
+
     def get_assets(self) -> list[dict]:
         """Lista todos os ativos cadastrados."""
         return self._get("/assets")
@@ -498,6 +505,13 @@ class ApiClient:
     def create_dividend(self, payload: dict[str, Any]) -> dict:
         """Registra um provento recebido."""
         return self._post("/dividends", payload)
+
+    def import_dividends(self, asset_id: int, years: int = 2) -> dict:
+        """
+        Importa histórico de dividendos via yfinance para o ativo dado.
+        Retorna {'imported': N, 'skipped': N, 'errors': [...]}.
+        """
+        return self._post(f"/dividends/import/{asset_id}?years={years}", {})
 
     def get_dividends_summary(
         self,

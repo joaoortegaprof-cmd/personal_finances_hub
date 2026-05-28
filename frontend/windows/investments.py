@@ -1083,6 +1083,32 @@ class DividendWorker(QThread):
             self.error_occurred.emit(f"Erro inesperado: {exc}")
 
 
+class ImportDividendsWorker(QThread):
+    """
+    Importa dividendos via POST /dividends/import/{asset_id} em background.
+    Emite (asset_name, result_dict) ao concluir.
+    """
+
+    finished       = pyqtSignal(str, dict)
+    error_occurred = pyqtSignal(str, str)
+
+    def __init__(self, client: ApiClient, asset_id: int, asset_name: str, years: int = 2) -> None:
+        super().__init__()
+        self._client     = client
+        self._asset_id   = asset_id
+        self._asset_name = asset_name
+        self._years      = years
+
+    def run(self) -> None:
+        try:
+            result = self._client.import_dividends(self._asset_id, self._years)
+            self.finished.emit(self._asset_name, result)
+        except ApiError as exc:
+            self.error_occurred.emit(self._asset_name, str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(self._asset_name, f"Erro inesperado: {exc}")
+
+
 class SaveDividendWorker(QThread):
     """Executa POST /dividends em background."""
 
@@ -1838,6 +1864,7 @@ class InvestmentsPage(QWidget):
         self._update_worker: UpdateAssetWorker | None = None
         self._dividend_worker: DividendWorker | None = None
         self._save_dividend_worker: SaveDividendWorker | None = None
+        self._import_dividend_worker: ImportDividendsWorker | None = None
         self._risk_worker: RiskWorker | None = None
         self._risk_loaded: bool = False
         self._rent_worker: RentabilidadeWorker | None = None
@@ -1956,6 +1983,16 @@ class InvestmentsPage(QWidget):
         # --- Toolbar ---
         div_toolbar = QHBoxLayout()
         div_toolbar.addStretch()
+
+        self._import_status_lbl = QLabel("")
+        self._import_status_lbl.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        div_toolbar.addWidget(self._import_status_lbl)
+
+        import_div_btn = QPushButton(_svg_icon("import", "#C8CAD8", 14), " Importar da B3")
+        import_div_btn.setToolTip("Importar histórico de dividendos via yfinance para um ativo selecionado")
+        import_div_btn.clicked.connect(self._open_import_dialog)
+        div_toolbar.addWidget(import_div_btn)
+
         add_div_btn = QPushButton("+ Registrar Provento")
         add_div_btn.setProperty("class", "primary")
         add_div_btn.style().unpolish(add_div_btn)
@@ -2399,6 +2436,98 @@ class InvestmentsPage(QWidget):
 
     def _on_div_error(self, message: str) -> None:
         self._div_loading.setText(f"Erro ao carregar proventos: {message}")
+
+    def _open_import_dialog(self) -> None:
+        """Abre dialog de seleção de ativo e importa dividendos via yfinance."""
+        tickers = [
+            (a["id"], a.get("ticker") or a.get("name", ""), a.get("name", ""))
+            for a in self._raw_assets
+            if a.get("ticker")  # só ativos com ticker podem ser importados
+        ]
+        if not tickers:
+            QMessageBox.information(
+                self, "Sem ativos com ticker",
+                "Nenhum ativo com ticker cadastrado para importar dividendos.",
+            )
+            return
+
+        from PyQt6.QtWidgets import QComboBox, QDialog, QFormLayout, QSpinBox
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Importar Dividendos da B3")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(380)
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(14)
+
+        title = QLabel("Importar Dividendos via yfinance")
+        title.setStyleSheet("font-size: 14px; font-weight: 700; color: #E8EAED;")
+        root.addWidget(title)
+
+        form = QFormLayout()
+        asset_combo = QComboBox()
+        for asset_id, ticker, name in tickers:
+            asset_combo.addItem(f"{ticker} — {name}", (asset_id, ticker, name))
+        asset_combo.setToolTip("Ativo a importar dividendos")
+        form.addRow("Ativo:", asset_combo)
+
+        years_spin = QSpinBox()
+        years_spin.setRange(1, 10)
+        years_spin.setValue(2)
+        years_spin.setToolTip("Quantos anos retroativos buscar no yfinance")
+        form.addRow("Anos retroativos:", years_spin)
+        root.addLayout(form)
+
+        info = QLabel("A importação deduplica por data — registros existentes não são duplicados.")
+        info.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(dlg.reject)
+        ok = QPushButton(_svg_icon("import", "#0A0D14", 14), " Importar")
+        ok.setProperty("class", "primary")
+        ok.clicked.connect(dlg.accept)
+        btn_row.addWidget(cancel)
+        btn_row.addWidget(ok)
+        root.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        asset_id, ticker, name = asset_combo.currentData()
+        years = years_spin.value()
+
+        if self._import_dividend_worker and self._import_dividend_worker.isRunning():
+            return
+
+        self._import_status_lbl.setText(f"Importando {ticker}…")
+        self._import_dividend_worker = ImportDividendsWorker(
+            self._client, asset_id, ticker, years
+        )
+        self._import_dividend_worker.finished.connect(self._on_import_done)
+        self._import_dividend_worker.error_occurred.connect(
+            lambda t, msg: (
+                self._import_status_lbl.setText(""),
+                QMessageBox.critical(self, f"Erro ao importar {t}", msg),
+            )
+        )
+        self._import_dividend_worker.start()
+
+    def _on_import_done(self, ticker: str, result: dict) -> None:
+        imp   = result.get("imported", 0)
+        skip  = result.get("skipped", 0)
+        errs  = result.get("errors", [])
+        self._import_status_lbl.setText(f"{ticker}: {imp} importados, {skip} já existiam")
+        if errs:
+            QMessageBox.warning(
+                self, f"Importação {ticker}",
+                f"{imp} importados, {skip} ignorados.\nErros:\n" + "\n".join(errs[:5]),
+            )
+        self._load_dividends()
 
     def _open_dividend_dialog(self) -> None:
         if not self._raw_assets:

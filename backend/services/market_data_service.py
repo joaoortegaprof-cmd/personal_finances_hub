@@ -349,6 +349,47 @@ class MarketDataService:
                 del self._cache[k]
 
     # -----------------------------------------------------------------
+    # Histórico de dividendos
+    # -----------------------------------------------------------------
+
+    async def get_dividend_history(
+        self, ticker: str, years: int = 2
+    ) -> list[dict]:
+        """
+        Busca o histórico de dividendos pagos pelo ticker via yfinance.
+
+        Retorna lista de {'ex_date': str, 'amount_per_unit': float}
+        para o período dos últimos `years` anos. Retorna [] em caso de erro
+        ou se o ativo não pagar proventos.
+        """
+        from datetime import timedelta
+        import asyncio
+
+        yf_ticker = self.to_yfinance_ticker(ticker)
+
+        def _fetch() -> list[dict]:
+            try:
+                stock     = yf.Ticker(yf_ticker)
+                dividends = stock.dividends
+                if dividends is None or dividends.empty:
+                    return []
+                start_date = date.today() - timedelta(days=years * 365)
+                recent     = dividends[dividends.index >= str(start_date)]
+                return [
+                    {
+                        "ex_date":         str(idx.date()),
+                        "amount_per_unit": float(val),
+                    }
+                    for idx, val in recent.items()
+                ]
+            except Exception as exc:
+                logger.warning(f"Dividendos yfinance {ticker}: {exc}")
+                return []
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _fetch)
+
+    # -----------------------------------------------------------------
     # Helpers públicos de conversão
     # -----------------------------------------------------------------
 

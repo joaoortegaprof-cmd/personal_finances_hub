@@ -253,8 +253,14 @@ async def list_transactions(
 
 @router.post("", response_model=TransactionOut, status_code=status.HTTP_201_CREATED)
 async def create_transaction(payload: TransactionCreate, db: AsyncSession = Depends(get_db)):
-    """Registra um novo lançamento de receita, despesa ou transferência."""
+    """Registra um novo lançamento. Para INVESTMENT com asset_id, também cria a posição."""
     data = payload.model_dump()
+
+    # Extrai campos de posição antes de criar a transação (não pertencem ao model Transaction)
+    asset_id   = data.pop("asset_id", None)
+    quantity   = data.pop("quantity", None)
+    unit_price = data.pop("unit_price", None)
+    fees       = data.pop("fees", None)
 
     if data.get("transaction_type") == TransactionType.CREDIT_EXPENSE:
         card_id = data.get("credit_card_id")
@@ -268,9 +274,32 @@ async def create_transaction(payload: TransactionCreate, db: AsyncSession = Depe
         data["invoice_id"] = invoice.id
         invoice.total_amount = (invoice.total_amount or Decimal("0.00")) + Decimal(str(data["amount"]))
 
-    repo = TransactionRepository(db)
+    repo        = TransactionRepository(db)
     transaction = Transaction(**data)
-    return await repo.create(transaction)
+    result      = await repo.create(transaction)
+
+    # Para lançamentos INVESTMENT com ativo e quantidade informados, cria a posição
+    if (
+        data.get("transaction_type") == TransactionType.INVESTMENT
+        and asset_id is not None
+        and quantity is not None
+        and unit_price is not None
+        and Decimal(str(quantity)) > 0
+    ):
+        from backend.models.asset import AssetPosition, OperationType
+        position = AssetPosition(
+            asset_id       = asset_id,
+            operation_date = data["transaction_date"],
+            quantity       = Decimal(str(quantity)),
+            unit_price     = Decimal(str(unit_price)),
+            fees           = Decimal(str(fees)) if fees is not None else Decimal("0"),
+            operation_type = OperationType.BUY,
+            notes          = f"Via lançamento: {data['description']}",
+        )
+        db.add(position)
+        await db.flush()
+
+    return result
 
 
 # IMPORTANTE: rotas estáticas devem vir ANTES de /{transaction_id}

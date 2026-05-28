@@ -29,6 +29,11 @@ class TransactionCreate(BaseModel):
     tags: str | None = Field(default=None, max_length=500)
     is_recurring: bool = False
     is_emergency_fund: bool = False
+    # Campos opcionais para criação automática de posição de carteira
+    asset_id: int | None = None
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    fees: Decimal | None = None
 
     def model_post_init(self, __context) -> None:
         # Auto-classifica a natureza se não informada

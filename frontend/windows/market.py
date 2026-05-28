@@ -495,9 +495,16 @@ class FundamentalsDialog(QDialog):
             self._start_fundamentals_worker()
 
         # --- Botão fechar ---
-        btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        btn.rejected.connect(self.reject)
-        root.addWidget(btn)
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QPushButton(_svg_icon("close", "#FF6B6B", 14), "Fechar")
+        close_btn.setStyleSheet(
+            "color: #FF6B6B; border-color: #FF6B6B; padding: 8px 20px; font-weight: 600;"
+        )
+        close_btn.setToolTip("Fechar detalhes do ativo")
+        close_btn.clicked.connect(self.reject)
+        close_row.addWidget(close_btn)
+        root.addLayout(close_row)
 
     def _build_position_frame(self, entry: dict) -> QFrame:
         frame = QFrame()
@@ -724,11 +731,19 @@ class BenchmarkDialog(QDialog):
         period_row = QHBoxLayout()
         period_row.addWidget(QLabel("Período:"))
         self._period_btns: list[QPushButton] = []
+        _period_tooltips = {
+            "1m": "Último mês",
+            "3m": "Últimos 3 meses",
+            "6m": "Últimos 6 meses",
+            "1y": "Último ano",
+            "3y": "Últimos 3 anos",
+        }
         for label, value in self._PERIODS:
             btn = QPushButton(label)
+            btn.setProperty("class", "period-btn")
             btn.setCheckable(True)
-            btn.setFixedWidth(46)
             btn.setChecked(value == self._period)
+            btn.setToolTip(_period_tooltips.get(value, label))
             btn.clicked.connect(lambda _, v=value: self._on_period_changed(v))
             period_row.addWidget(btn)
             self._period_btns.append(btn)
@@ -776,14 +791,23 @@ class BenchmarkDialog(QDialog):
         root.addWidget(self._canvas)
 
         # Fechar
-        btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        btn.rejected.connect(self.reject)
-        root.addWidget(btn)
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QPushButton(_svg_icon("close", "#FF6B6B", 14), "Fechar")
+        close_btn.setStyleSheet(
+            "color: #FF6B6B; border-color: #FF6B6B; padding: 8px 20px; font-weight: 600;"
+        )
+        close_btn.setToolTip("Fechar comparação de rentabilidade")
+        close_btn.clicked.connect(self.reject)
+        close_row.addWidget(close_btn)
+        root.addLayout(close_row)
 
     def _on_period_changed(self, period: str) -> None:
         self._period = period
         for btn, (_, v) in zip(self._period_btns, self._PERIODS):
             btn.setChecked(v == period)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
         self._load()
 
     def _load(self) -> None:

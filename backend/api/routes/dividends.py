@@ -127,6 +127,98 @@ async def list_dividends(
     return [_to_out(d) for d in result.scalars().all()]
 
 
+@router.post("/import/{asset_id}")
+async def import_dividends_from_market(
+    asset_id: int,
+    years: int = Query(2, ge=1, le=10),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Importa o histórico de dividendos de um ativo via yfinance.
+
+    Para cada evento encontrado:
+      - Verifica se já existe um Dividend com payment_date == ex_date (deduplicação)
+      - Calcula total_amount = amount_per_unit × posição consolidada na data
+      - Cria o registro Dividend se não existir
+
+    Retorna: {'imported': N, 'skipped': N, 'errors': [...]}.
+    """
+    from backend.models.asset import AssetPosition, OperationType
+    from backend.services.market_data_service import MarketDataService
+    from decimal import Decimal as D
+    from sqlalchemy import case, func
+
+    asset_result = await db.execute(select(Asset).where(Asset.id == asset_id))
+    asset = asset_result.scalar_one_or_none()
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"Ativo {asset_id} não encontrado.")
+    if not asset.ticker:
+        raise HTTPException(status_code=422, detail="Ativo não possui ticker — impossível buscar dividendos.")
+
+    svc      = MarketDataService()
+    history  = await svc.get_dividend_history(asset.ticker, years=years)
+
+    imported = 0
+    skipped  = 0
+    errors: list[str] = []
+
+    for item in history:
+        ex_date_str    = item["ex_date"]
+        amount_per_unit = D(str(item["amount_per_unit"]))
+        try:
+            ex_date = date.fromisoformat(ex_date_str)
+        except ValueError:
+            errors.append(f"Data inválida: {ex_date_str}")
+            continue
+
+        # Deduplicação: já existe dividend para este ativo nesta data?
+        existing = await db.execute(
+            select(Dividend).where(
+                Dividend.asset_id   == asset_id,
+                Dividend.payment_date == ex_date,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            skipped += 1
+            continue
+
+        # Posição consolidada na data do provento
+        qty_result = await db.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            ((AssetPosition.operation_type == OperationType.BUY) & (AssetPosition.quantity > 0), AssetPosition.quantity),
+                            ((AssetPosition.operation_type == OperationType.SELL) & (AssetPosition.quantity < 0), AssetPosition.quantity),
+                            else_=0,
+                        )
+                    ),
+                    D("0"),
+                )
+            ).where(
+                AssetPosition.asset_id      == asset_id,
+                AssetPosition.operation_date <= ex_date,
+            )
+        )
+        qty = qty_result.scalar() or D("0")
+        total = (amount_per_unit * qty).quantize(D("0.01"))
+
+        try:
+            div = Dividend(
+                asset_id        = asset_id,
+                payment_date    = ex_date,
+                amount_per_unit = amount_per_unit,
+                total_amount    = total if total > 0 else amount_per_unit,
+            )
+            db.add(div)
+            await db.flush()
+            imported += 1
+        except Exception as exc:
+            errors.append(f"{ex_date_str}: {exc}")
+
+    return {"imported": imported, "skipped": skipped, "errors": errors}
+
+
 @router.post("", response_model=DividendOut, status_code=status.HTTP_201_CREATED)
 async def create_dividend(
     payload: DividendCreate,

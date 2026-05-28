@@ -431,12 +431,15 @@ class SettingsPage(QWidget):
 
         self._savings_goal = _pct_spin()
         self._savings_goal.setValue(20.0)
+        self._savings_goal.setToolTip("Percentual da renda que você deseja poupar mensalmente")
         goals_form.addRow("Taxa de poupança desejada:", self._savings_goal)
 
         self._income_estimate = _money_spin()
+        self._income_estimate.setToolTip("Renda mensal bruta estimada usada como referência nos cálculos")
         goals_form.addRow("Renda mensal estimada:", self._income_estimate)
 
         self._emergency_months = _int_spin(1, 36, 6)
+        self._emergency_months.setToolTip("Quantidade de meses de despesas que você deseja ter de reserva (recomendado: 6)")
         goals_form.addRow("Fundo de emergência (meses de despesas):", self._emergency_months)
 
         goals_box.layout().addLayout(goals_form)
@@ -449,22 +452,28 @@ class SettingsPage(QWidget):
         alerts_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self._invoice_days = _int_spin(1, 30, 3)
+        self._invoice_days.setToolTip("Quantos dias antes do vencimento da fatura você quer ser avisado")
         alerts_form.addRow("Avisar fatura do cartão com antecedência de:", _with_unit(self._invoice_days, "dias"))
 
         self._maturity_days = _int_spin(1, 365, 30)
+        self._maturity_days.setToolTip("Janela futura (em dias) para alertas de vencimento de renda fixa e Tesouro")
         alerts_form.addRow("Alertar vencimentos nos próximos:", _with_unit(self._maturity_days, "dias"))
 
         self._savings_alert = _pct_spin()
         self._savings_alert.setValue(15.0)
+        self._savings_alert.setToolTip("Alerta é disparado quando a taxa de poupança real cair abaixo deste valor")
         alerts_form.addRow("Alertar se taxa de poupança ficar abaixo de:", self._savings_alert)
 
         self._debt_days = _int_spin(1, 30, 3)
+        self._debt_days.setToolTip("Quantos dias antes do vencimento de uma parcela de dívida você quer ser alertado")
         alerts_form.addRow("Alertar parcelas de dívidas nos próximos:", _with_unit(self._debt_days, "dias"))
 
         self._recurring_days = _int_spin(1, 30, 7)
+        self._recurring_days.setToolTip("Janela para alertas de gastos recorrentes (assinaturas, planos fixos)")
         alerts_form.addRow("Alertar recorrentes nos próximos:", _with_unit(self._recurring_days, "dias"))
 
         self._min_liquidity = _money_spin()
+        self._min_liquidity.setToolTip("Valor mínimo que você quer manter disponível em liquidez imediata (D+0)")
         alerts_form.addRow("Mínimo de liquidez imediata (D+0):", self._min_liquidity)
 
         alerts_box.layout().addLayout(alerts_form)
@@ -492,16 +501,28 @@ class SettingsPage(QWidget):
         info.setWordWrap(True)
         main.addWidget(info)
 
-        # --- Botão salvar ---
+        # --- Botões de ação ---
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+
         save_btn = QPushButton(" Salvar Configurações")
         save_btn.setIcon(_svg_icon("save", "#FFFFFF", 14))
         save_btn.setProperty("class", "primary")
         save_btn.style().unpolish(save_btn)
         save_btn.style().polish(save_btn)
-        save_btn.setFixedWidth(220)
+        save_btn.setMinimumHeight(36)
+        save_btn.setMinimumWidth(200)
+        save_btn.setToolTip("Salvar todas as configurações no arquivo data/settings.json")
         save_btn.clicked.connect(self._save)
         btn_row.addWidget(save_btn)
+
+        reset_btn = QPushButton(" Redefinir Padrões")
+        reset_btn.setIcon(_svg_icon("refresh", "#C8CAD8", 14))
+        reset_btn.setMinimumHeight(36)
+        reset_btn.setMinimumWidth(180)
+        reset_btn.setToolTip("Restaurar todos os valores para as configurações padrão")
+        reset_btn.clicked.connect(self._reset_defaults)
+        btn_row.addWidget(reset_btn)
 
         self._saved_label = QLabel("")
         self._saved_label.setStyleSheet("color: #00C896; font-size: 13px;")
@@ -543,6 +564,32 @@ class SettingsPage(QWidget):
         enabled = cfg.get("enabled_alerts")  # None = todos
         for value, cb in self._alert_checks.items():
             cb.setChecked(enabled is None or value in enabled)
+
+    def _reset_defaults(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Redefinir padrões",
+            "Restaurar todas as configurações para os valores padrão?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for k, v in _DEFAULTS.items():
+            pass  # _load_values já lê do JSON; aqui forçamos os defaults
+        # Aplica defaults diretamente nos widgets
+        self._savings_goal.setValue(_DEFAULTS["savings_rate_goal_pct"])
+        self._income_estimate.setValue(_DEFAULTS["monthly_income_estimate"])
+        self._emergency_months.setValue(_DEFAULTS["emergency_fund_months"])
+        self._invoice_days.setValue(_DEFAULTS["invoice_alert_days"])
+        self._maturity_days.setValue(_DEFAULTS["maturity_alert_days"])
+        self._savings_alert.setValue(_DEFAULTS["savings_alert_pct"])
+        self._debt_days.setValue(_DEFAULTS["debt_alert_days"])
+        self._recurring_days.setValue(_DEFAULTS["recurring_alert_days"])
+        self._min_liquidity.setValue(_DEFAULTS["min_liquidity"])
+        for cb in self._alert_checks.values():
+            cb.setChecked(True)
+        self._saved_label.setText("↺ Padrões restaurados — clique em Salvar para persistir.")
 
     def _save(self) -> None:
         enabled = [v for v, cb in self._alert_checks.items() if cb.isChecked()]

@@ -122,6 +122,19 @@ _ASSET_SLOT_COLORS = [
 _MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
                "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
+SECTOR_COLORS: dict[str, str] = {
+    "Energia":           "#E67E22",
+    "Financeiro":        "#3498DB",
+    "Utilidades":        "#9B59B6",
+    "Imóveis":           "#1ABC9C",
+    "Consumo":           "#E74C3C",
+    "Saúde":             "#2ECC71",
+    "Tecnologia":        "#F39C12",
+    "Industrial":        "#95A5A6",
+    "Materiais":         "#D35400",
+    "Não classificado":  "#7F8C8D",
+}
+
 
 # ======================================================================
 # Workers — execução HTTP em background
@@ -1171,6 +1184,92 @@ class AlertHistoryRow(QFrame):
 
 
 # ======================================================================
+# Setor — worker e canvas
+# ======================================================================
+
+class SectorWorker(QThread):
+    """Busca distribuição por setor em background (GET /portfolio/by-sector)."""
+
+    data_ready     = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, client: ApiClient) -> None:
+        super().__init__()
+        self._client = client
+
+    def run(self) -> None:
+        try:
+            data = self._client.get_portfolio_by_sector()
+            self.data_ready.emit(data)
+        except ApiError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Erro: {exc}")
+
+
+class SectorBarCanvas(FigureCanvas):
+    """
+    Gráfico de barras horizontais mostrando a distribuição da carteira
+    por setor. Cada barra mostra valor investido e % do portfólio.
+    """
+
+    _BG = "#1A1D2E"
+
+    def __init__(self, parent=None) -> None:
+        self._fig = Figure(facecolor=self._BG)
+        super().__init__(self._fig)
+        self.setParent(parent)
+
+    def update_data(self, sectors: list[dict]) -> None:
+        self._fig.clear()
+        if not sectors:
+            self.draw()
+            return
+
+        n = len(sectors)
+        self._fig.set_size_inches(8, max(1.2, n * 0.55))
+
+        ax = self._fig.add_subplot(111)
+        ax.set_facecolor(self._BG)
+        ax.figure.set_facecolor(self._BG)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(colors="#8B90A7", labelsize=8, length=0)
+        ax.xaxis.set_visible(False)
+
+        labels = [s["sector"] for s in sectors]
+        values = [s["pct_portfolio"] for s in sectors]
+        invested = [s["total_invested"] for s in sectors]
+        colors = [
+            SECTOR_COLORS.get(lbl, SECTOR_COLORS["Não classificado"])
+            for lbl in labels
+        ]
+
+        bars = ax.barh(labels, values, color=colors, height=0.55)
+
+        # Anotações em cada barra
+        for bar, lbl, pct, inv in zip(bars, labels, values, invested):
+            inv_str = f"R$ {inv:,.0f}".replace(",", ".")
+            ax.text(
+                bar.get_width() + 0.4,
+                bar.get_y() + bar.get_height() / 2,
+                f"{inv_str}  ({pct:.1f}%)",
+                va="center", ha="left",
+                color="#C8CAD8", fontsize=8,
+            )
+
+        ax.set_xlim(0, max(values) * 1.55 if values else 1)
+        ax.set_yticks(range(n))
+        ax.set_yticklabels(labels, color="#C8CAD8", fontsize=8)
+        ax.invert_yaxis()
+
+        self._fig.tight_layout(pad=0.6)
+        self.setMinimumHeight(max(80, n * 34))
+        self.setMaximumHeight(max(80, n * 34))
+        self.draw()
+
+
+# ======================================================================
 # Página principal do Dashboard
 # ======================================================================
 
@@ -1182,10 +1281,11 @@ class DashboardPage(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self._client      = ApiClient()
-        self._worker:      DashboardWorker       | None = None
-        self._pat_worker:  PatrimonyHistoryWorker | None = None
-        self._hist_worker: AlertHistoryWorker     | None = None
+        self._client        = ApiClient()
+        self._worker:        DashboardWorker       | None = None
+        self._pat_worker:    PatrimonyHistoryWorker | None = None
+        self._hist_worker:   AlertHistoryWorker     | None = None
+        self._sector_worker: SectorWorker           | None = None
 
         self._build_ui()
         app_signals.data_changed.connect(self.load_data)
@@ -1278,6 +1378,16 @@ class DashboardPage(QWidget):
         self._cat_donuts_grid = QGridLayout(self._cat_donuts_grid_widget)
         self._cat_donuts_grid.setSpacing(16)
         self._content_layout.addWidget(self._cat_donuts_grid_widget)
+
+        # ── Distribuição por Setor ─────────────────────────────────────
+        self._sector_title = QLabel("Distribuição por Setor")
+        self._sector_title.setObjectName("sectionTitle")
+        self._sector_title.setVisible(False)
+        self._content_layout.addWidget(self._sector_title)
+
+        self._sector_canvas = SectorBarCanvas()
+        self._sector_canvas.setVisible(False)
+        self._content_layout.addWidget(self._sector_canvas)
 
         # ── Alertas ────────────────────────────────────────────────────
         self._alerts_title = QLabel("Alertas Ativos")
@@ -1401,6 +1511,13 @@ class DashboardPage(QWidget):
             self._hist_worker = AlertHistoryWorker(self._client, limit=30)
             self._hist_worker.data_ready.connect(self._on_history_ready)
             self._hist_worker.start()
+
+        # Distribuição por setor — carrega em paralelo
+        if not (self._sector_worker and self._sector_worker.isRunning()):
+            self._sector_worker = SectorWorker(self._client)
+            self._sector_worker.data_ready.connect(self._on_sector_ready)
+            self._sector_worker.error_occurred.connect(lambda _: None)
+            self._sector_worker.start()
 
     # ------------------------------------------------------------------
     # Slots — DashboardWorker
@@ -1534,6 +1651,14 @@ class DashboardPage(QWidget):
         self._bars_canvas.setVisible(False)
         self._row2_widget.setVisible(False)
 
+    def _on_sector_ready(self, data: dict) -> None:
+        sectors = data.get("sectors", [])
+        if not sectors:
+            return
+        self._sector_canvas.update_data(sectors)
+        self._sector_title.setVisible(True)
+        self._sector_canvas.setVisible(True)
+
     # ------------------------------------------------------------------
     # Helpers de UI
     # ------------------------------------------------------------------
@@ -1558,6 +1683,9 @@ class DashboardPage(QWidget):
         self._debts_title.setVisible(visible)
         self._hist_title.setVisible(visible)
         self._hist_toggle_btn.setVisible(visible)
+        if not visible:
+            self._sector_title.setVisible(False)
+            self._sector_canvas.setVisible(False)
 
     def _populate_debts(self, debts: list[dict]) -> None:
         # Limpa rows anteriores

@@ -322,6 +322,81 @@ async def get_risk_analysis(db: AsyncSession = Depends(get_db)):
     }
 
 
+@portfolio_router.get("/by-sector")
+async def get_portfolio_by_sector(db: AsyncSession = Depends(get_db)):
+    """
+    Retorna a distribuição da carteira agrupada por setor do ativo.
+
+    Considera apenas posições com quantidade positiva (BUY consolidado).
+    Ativos sem setor definido são agrupados em "Não classificado".
+    """
+    from sqlalchemy import case, func, select
+
+    result = await db.execute(
+        select(
+            Asset.sector,
+            Asset.ticker,
+            Asset.name,
+            Asset.asset_type,
+            func.sum(
+                case(
+                    (
+                        (AssetPosition.operation_type == OperationType.BUY)
+                        & (AssetPosition.quantity > 0),
+                        AssetPosition.quantity,
+                    ),
+                    (
+                        (AssetPosition.operation_type == OperationType.SELL)
+                        & (AssetPosition.quantity < 0),
+                        AssetPosition.quantity,
+                    ),
+                    else_=0,
+                )
+            ).label("net_qty"),
+            func.sum(
+                case(
+                    (
+                        (AssetPosition.operation_type == OperationType.BUY)
+                        & (AssetPosition.quantity > 0),
+                        AssetPosition.quantity * AssetPosition.unit_price,
+                    ),
+                    else_=0,
+                )
+            ).label("cost"),
+        )
+        .join(AssetPosition, Asset.id == AssetPosition.asset_id)
+        .group_by(Asset.id)
+    )
+    rows = result.all()
+
+    sectors: dict[str, dict] = {}
+    total = 0.0
+    for row in rows:
+        net_qty = float(row.net_qty or 0)
+        if net_qty <= 0:
+            continue
+        sector = row.sector or "Não classificado"
+        cost = float(row.cost or 0)
+        if sector not in sectors:
+            sectors[sector] = {"sector": sector, "assets": [], "total_invested": 0.0, "pct_portfolio": 0.0}
+        sectors[sector]["assets"].append({
+            "ticker": row.ticker,
+            "name": row.name,
+            "type": str(row.asset_type.value) if hasattr(row.asset_type, "value") else str(row.asset_type),
+            "invested": cost,
+        })
+        sectors[sector]["total_invested"] += cost
+        total += cost
+
+    for s in sectors.values():
+        s["pct_portfolio"] = s["total_invested"] / total * 100 if total > 0 else 0.0
+
+    return {
+        "sectors": sorted(sectors.values(), key=lambda x: x["total_invested"], reverse=True),
+        "total": total,
+    }
+
+
 @portfolio_router.get("/opportunity-cost")
 async def get_opportunity_cost(
     period_months: int = 12,

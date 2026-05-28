@@ -92,8 +92,8 @@ class TransactionsWorker(QThread):
     fora da thread principal, mantendo a UI responsiva.
     """
 
-    # (lista de transações, lista de contas, lista de cartões)
-    data_ready = pyqtSignal(list, list, list)
+    # (lista de transações, lista de contas, lista de cartões, lista de ativos)
+    data_ready = pyqtSignal(list, list, list, list)
     error_occurred = pyqtSignal(str)
 
     def __init__(
@@ -118,7 +118,11 @@ class TransactionsWorker(QThread):
                 cards = self._client.get_cards()
             except ApiError:
                 cards = []
-            self.data_ready.emit(transactions, accounts, cards)
+            try:
+                assets = self._client.get_assets()
+            except ApiError:
+                assets = []
+            self.data_ready.emit(transactions, accounts, cards, assets)
         except ApiError as exc:
             self.error_occurred.emit(str(exc))
         except Exception as exc:
@@ -338,12 +342,14 @@ class NewTransactionDialog(QDialog):
         cards: list[dict] | None = None,
         parent: QWidget | None = None,
         preselect_account_id: int | None = None,
+        assets: list[dict] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Novo Lançamento")
         self.setMinimumSize(520, 460)
         self._accounts = accounts
         self._cards    = cards or []
+        self._assets   = assets or []
         self._tx_type: str | None = None
         self._preselect_account_id = preselect_account_id
         self._build_ui()
@@ -493,9 +499,79 @@ class NewTransactionDialog(QDialog):
         self._notes.setMaximumHeight(70)
         form.addRow("Observações", self._notes)
 
+        # ── Campos de investimento (visíveis apenas para tipo INVESTMENT) ──
+        sep = QLabel("— Detalhes do Ativo (opcional) —")
+        sep.setStyleSheet("color: #8B90A7; font-size: 10px; margin-top: 8px;")
+        sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._invest_sep = sep
+        form.addRow(sep)
+
+        self._asset_combo = QComboBox()
+        self._asset_combo.addItem("— Sem ativo específico —", userData=None)
+        for a in self._assets:
+            label = (a.get("ticker") or "") + ("  " if a.get("ticker") else "") + a.get("name", "")
+            self._asset_combo.addItem(label.strip(), userData=a["id"])
+        self._asset_lbl = QLabel("Ativo relacionado")
+        self._asset_combo.setToolTip("Selecione para registrar automaticamente a posição na carteira")
+        self._asset_combo.currentIndexChanged.connect(self._on_asset_changed)
+        form.addRow(self._asset_lbl, self._asset_combo)
+
+        self._quantity_spin = QDoubleSpinBox()
+        self._quantity_spin.setRange(0.0001, 9_999_999.0)
+        self._quantity_spin.setDecimals(4)
+        self._quantity_spin.setSingleStep(1.0)
+        self._quantity_spin.setToolTip("Quantidade de cotas/ações adquiridas")
+        self._quantity_lbl = QLabel("Quantidade")
+        form.addRow(self._quantity_lbl, self._quantity_spin)
+        self._quantity_spin.valueChanged.connect(self._update_invest_preview)
+
+        self._unit_price_spin = QDoubleSpinBox()
+        self._unit_price_spin.setRange(0.01, 999_999.99)
+        self._unit_price_spin.setDecimals(2)
+        self._unit_price_spin.setPrefix("R$ ")
+        self._unit_price_spin.setSingleStep(1.0)
+        self._unit_price_spin.setToolTip("Preço pago por unidade/cota")
+        self._unit_price_lbl = QLabel("Preço unitário")
+        form.addRow(self._unit_price_lbl, self._unit_price_spin)
+        self._unit_price_spin.valueChanged.connect(self._update_invest_preview)
+
+        self._fees_spin = QDoubleSpinBox()
+        self._fees_spin.setRange(0.0, 9_999.99)
+        self._fees_spin.setDecimals(2)
+        self._fees_spin.setPrefix("R$ ")
+        self._fees_spin.setSingleStep(0.5)
+        self._fees_spin.setToolTip("Taxas de corretagem e emolumentos")
+        self._fees_lbl = QLabel("Taxas")
+        form.addRow(self._fees_lbl, self._fees_spin)
+
+        self._invest_preview = QLabel("")
+        self._invest_preview.setStyleSheet("color: #4A9EFF; font-size: 12px; font-weight: 600;")
+        self._invest_preview_lbl = QLabel("Total calculado")
+        form.addRow(self._invest_preview_lbl, self._invest_preview)
+
         scroll.setWidget(inner)
         outer.addWidget(scroll)
         return page
+
+    def _on_asset_changed(self) -> None:
+        asset_id = self._asset_combo.currentData()
+        has_asset = asset_id is not None
+        for w in [self._quantity_lbl, self._quantity_spin,
+                  self._unit_price_lbl, self._unit_price_spin,
+                  self._fees_lbl, self._fees_spin,
+                  self._invest_preview_lbl, self._invest_preview]:
+            w.setVisible(has_asset)
+
+    def _update_invest_preview(self) -> None:
+        qty   = self._quantity_spin.value()
+        price = self._unit_price_spin.value()
+        fees  = self._fees_spin.value()
+        total = qty * price + fees
+        if total > 0:
+            s = f"{total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            self._invest_preview.setText(f"R$ {s}")
+            # Sync with amount field
+            self._amount.setValue(round(total, 2))
 
     def _configure_form(self, tx_type: str) -> None:
         """Mostra/oculta campos conforme o tipo selecionado."""
@@ -504,6 +580,7 @@ class NewTransactionDialog(QDialog):
         show_nature  = tx_type in ("debit", "credit")
         show_account = tx_type in ("income", "debit", "investment", "invoice")
         show_card    = tx_type in ("credit", "invoice")
+        show_invest  = tx_type == "investment"
 
         account_labels = {
             "invoice":    "Conta de débito *",
@@ -522,6 +599,20 @@ class NewTransactionDialog(QDialog):
         self._account_combo.setVisible(show_account)
         self._card_lbl.setVisible(show_card)
         self._card_combo.setVisible(show_card)
+
+        # Campos de ativo — visíveis só para Investimento e apenas se há ativos
+        has_assets = bool(self._assets)
+        self._invest_sep.setVisible(show_invest and has_assets)
+        self._asset_lbl.setVisible(show_invest and has_assets)
+        self._asset_combo.setVisible(show_invest and has_assets)
+        if show_invest and has_assets:
+            self._on_asset_changed()  # mostra/oculta sub-campos
+        else:
+            for w in [self._quantity_lbl, self._quantity_spin,
+                      self._unit_price_lbl, self._unit_price_spin,
+                      self._fees_lbl, self._fees_spin,
+                      self._invest_preview_lbl, self._invest_preview]:
+                w.setVisible(False)
 
     # ------------------------------------------------------------------
     # Navegação entre etapas
@@ -616,6 +707,15 @@ class NewTransactionDialog(QDialog):
             card_id = self._card_combo.currentData()
             if card_id is not None:
                 payload["credit_card_id"] = card_id
+
+        # Campos de investimento integrado
+        if (tx_type == "investment"
+                and not self._asset_combo.isHidden()
+                and self._asset_combo.currentData() is not None):
+            payload["asset_id"]   = self._asset_combo.currentData()
+            payload["quantity"]   = f"{self._quantity_spin.value():.4f}"
+            payload["unit_price"] = f"{self._unit_price_spin.value():.2f}"
+            payload["fees"]       = f"{self._fees_spin.value():.2f}"
 
         return payload
 
@@ -1330,6 +1430,7 @@ class TransactionsPage(QWidget):
         self._filtered_transactions: list[dict] = []
         self._accounts: list[dict] = []
         self._cards: list[dict] = []
+        self._assets: list[dict] = []
         self._debts: list[dict] = []
 
         # Estado do navegador de meses (0 = todos os meses)
@@ -1888,9 +1989,10 @@ class TransactionsPage(QWidget):
     # Slots
     # ------------------------------------------------------------------
 
-    def _on_data_ready(self, transactions: list[dict], accounts: list[dict], cards: list[dict]) -> None:
+    def _on_data_ready(self, transactions: list[dict], accounts: list[dict], cards: list[dict], assets: list[dict] = None) -> None:
         self._accounts = accounts
         self._cards    = cards
+        self._assets   = assets or []
 
         # Constrói mapa id→nome para exibir nome da conta na tabela
         self._account_map: dict[int, str] = {
@@ -2199,7 +2301,7 @@ class TransactionsPage(QWidget):
                 "Cadastre ao menos uma conta em Contas antes de registrar lançamentos.",
             )
             return
-        dialog = NewTransactionDialog(self._accounts, self._cards, parent=self)
+        dialog = NewTransactionDialog(self._accounts, self._cards, parent=self, assets=self._assets)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -2216,6 +2318,7 @@ class TransactionsPage(QWidget):
             self._cards,
             parent=self,
             preselect_account_id=account_id,
+            assets=self._assets,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2231,7 +2334,7 @@ class TransactionsPage(QWidget):
         self._save_worker.error_occurred.connect(self._on_save_error)
         self._save_worker.start()
 
-    def _on_saved(self) -> None:
+    def _on_saved(self, had_asset: bool = False) -> None:
         """Lançamento salvo com sucesso — recarrega a tabela."""
         app_signals.data_changed.emit()
         self.load_data()

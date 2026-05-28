@@ -41,6 +41,7 @@ from frontend.windows.dashboard import DashboardPage
 from frontend.windows.investments import InvestmentsPage
 from frontend.windows.market import MarketPage
 from frontend.windows.reports import ReportsPage
+from frontend.windows.goals_page import GoalsPage
 from frontend.windows.settings_page import SettingsPage
 from frontend.windows.simulation import SimulationPage
 from frontend.windows.tax import TaxPage
@@ -79,6 +80,7 @@ _NAV_ITEMS: list[tuple[str, int]] = [
     ("IR e DARF",     8),
     ("Configurações", 9),
     ("Simulações",   10),
+    ("Metas",        11),
 ]
 
 # Ícones SVG para cada item da sidebar (mesma ordem de _NAV_ITEMS)
@@ -94,6 +96,7 @@ _NAV_ICONS: list[str] = [
     "tax",         # IR e DARF
     "settings",    # Configurações
     "simulation",  # Simulações
+    "check",       # Metas
 ]
 
 
@@ -331,6 +334,10 @@ class MainWindow(QMainWindow):
         # 10 — Simulações financeiras
         self._simulation_page = SimulationPage()
         stack.addWidget(self._simulation_page)
+
+        # 11 — Metas financeiras pessoais
+        self._goals_page = GoalsPage()
+        stack.addWidget(self._goals_page)
 
         return stack
 
