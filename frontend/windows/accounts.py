@@ -802,8 +802,9 @@ class AccountsPage(QWidget):
         self.load_data()
 
         # Quando qualquer dado muda (lançamento, transferência de outra página…),
-        # atualiza os saldos de todos os cards sem recarregar toda a lista.
-        app_signals.data_changed.connect(self._refresh_all_balances)
+        # recarrega a lista completa de contas para refletir novos saldos.
+        # load_data() já gerencia a flag de worker em execução e mostra loading.
+        app_signals.data_changed.connect(self.load_data)
 
     # ------------------------------------------------------------------
     # UI

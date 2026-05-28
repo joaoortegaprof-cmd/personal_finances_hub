@@ -405,6 +405,17 @@ class AssetPosition(Base):
         CheckConstraint("fees >= 0", name="ck_position_nonneg_fees"),
         # Preço unitário não pode ser negativo
         CheckConstraint("unit_price >= 0", name="ck_position_nonneg_price"),
+        # BUY deve ter quantidade positiva; SELL deve ter quantidade negativa.
+        # Outros tipos (BONUS, SPLIT, REVERSE_SPLIT, AMORTIZATION) são livres.
+        # Nota: SQLite não suporta adicionar CHECKs em tabelas existentes via ALTER TABLE;
+        # esta constraint é aplicada em tabelas criadas do zero (ambiente novo/testes).
+        # Para o banco existente a validação é feita no endpoint (validate_position).
+        CheckConstraint(
+            "(operation_type = 'BUY' AND quantity > 0) OR "
+            "(operation_type = 'SELL' AND quantity < 0) OR "
+            "operation_type NOT IN ('BUY', 'SELL')",
+            name="ck_position_quantity_sign",
+        ),
     )
 
     def __repr__(self) -> str:

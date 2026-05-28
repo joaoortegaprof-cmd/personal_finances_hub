@@ -1821,7 +1821,7 @@ class TransactionsPage(QWidget):
         header.setSectionResizeMode(_COL_NATURE, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(_COL_AMOUNT, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(_COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        table.setColumnWidth(_COL_NATURE, 110)
+        table.setColumnWidth(_COL_NATURE, 130)
         table.setColumnWidth(_COL_AMOUNT, 120)
         table.setColumnWidth(_COL_ACTIONS, 76)
 

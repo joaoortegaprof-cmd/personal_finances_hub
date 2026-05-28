@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.account import InvoiceStatus
+from backend.models.asset import Asset
 from backend.repositories.account_repository import AccountRepository
 from backend.repositories.asset_repository import AssetRepository
 from backend.repositories.transaction_repository import TransactionRepository
@@ -154,11 +156,17 @@ class FinancialSummaryService:
                         # Apenas faturas ainda não pagas representam passivo real
                         total_liabilities += invoice.total_amount
 
-        # Custo investido líquido = total comprado - total recebido em vendas
-        portfolio = await self._asset_repo.get_portfolio_summary_by_type()
+        # Custo investido = soma de (quantidade líquida × preço médio) por ativo.
+        # Usamos qty × avg_price em vez de get_portfolio_summary_by_type para
+        # evitar distorções causadas por entradas históricas com sinal errado.
+        assets_result = await self._session.execute(select(Asset))
         investment_cost = Decimal("0.00")
-        for v in portfolio.values():
-            investment_cost += v["buy_cost"] - v["sell_proceeds"]
+        for asset in assets_result.scalars().all():
+            qty = await self._asset_repo.get_consolidated_position(asset.id)
+            if qty <= 0:
+                continue
+            avg = await self._asset_repo.calculate_avg_price(asset.id)
+            investment_cost += qty * avg
         investment_cost = investment_cost.quantize(Decimal("0.01"))
 
         total_assets = account_balance + investment_cost

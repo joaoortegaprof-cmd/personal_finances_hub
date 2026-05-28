@@ -22,9 +22,57 @@ from backend.api.schemas.transactions import (
     TransactionUpdate,
 )
 from backend.core.database import get_db
+from backend.models.account import CreditCard, CreditCardInvoice, InvoiceStatus
 from backend.models.transaction import Transaction, TransactionCategory, TransactionType
 from backend.repositories.transaction_repository import TransactionRepository
 from backend.services.financial_summary_service import FinancialSummaryService
+
+
+async def _get_or_create_open_invoice(
+    card_id: int, tx_date: date, db: AsyncSession
+) -> CreditCardInvoice:
+    """Retorna a fatura aberta do mês da transação, criando-a se necessário."""
+    result = await db.execute(
+        select(CreditCardInvoice).where(
+            CreditCardInvoice.credit_card_id == card_id,
+            CreditCardInvoice.month == tx_date.month,
+            CreditCardInvoice.year == tx_date.year,
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if invoice:
+        return invoice
+
+    card_result = await db.execute(select(CreditCard).where(CreditCard.id == card_id))
+    card = card_result.scalar_one_or_none()
+    if not card:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cartão não encontrado")
+
+    # Calcular datas de fechamento e vencimento com base nos dias do cartão
+    closing_day = min(card.closing_day, 28)
+    due_day = min(card.due_day, 28)
+    closing_date = date(tx_date.year, tx_date.month, closing_day)
+
+    # Vencimento pode ser no mês seguinte se due_day < closing_day
+    if due_day >= closing_day:
+        due_date = date(tx_date.year, tx_date.month, due_day)
+    else:
+        next_month = tx_date.month % 12 + 1
+        next_year = tx_date.year + (1 if tx_date.month == 12 else 0)
+        due_date = date(next_year, next_month, due_day)
+
+    invoice = CreditCardInvoice(
+        credit_card_id=card_id,
+        month=tx_date.month,
+        year=tx_date.year,
+        closing_date=closing_date,
+        due_date=due_date,
+        total_amount=Decimal("0.00"),
+        status=InvoiceStatus.OPEN,
+    )
+    db.add(invoice)
+    await db.flush()
+    return invoice
 
 router = APIRouter(prefix="/transactions", tags=["Transações"])
 
@@ -206,8 +254,22 @@ async def list_transactions(
 @router.post("", response_model=TransactionOut, status_code=status.HTTP_201_CREATED)
 async def create_transaction(payload: TransactionCreate, db: AsyncSession = Depends(get_db)):
     """Registra um novo lançamento de receita, despesa ou transferência."""
+    data = payload.model_dump()
+
+    if data.get("transaction_type") == TransactionType.CREDIT_EXPENSE:
+        card_id = data.get("credit_card_id")
+        if not card_id:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Lançamento no crédito requer credit_card_id",
+            )
+        tx_date = data.get("transaction_date") or date.today()
+        invoice = await _get_or_create_open_invoice(card_id, tx_date, db)
+        data["invoice_id"] = invoice.id
+        invoice.total_amount = (invoice.total_amount or Decimal("0.00")) + Decimal(str(data["amount"]))
+
     repo = TransactionRepository(db)
-    transaction = Transaction(**payload.model_dump())
+    transaction = Transaction(**data)
     return await repo.create(transaction)
 
 

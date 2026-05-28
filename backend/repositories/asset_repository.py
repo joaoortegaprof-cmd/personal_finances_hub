@@ -4,7 +4,7 @@ Repositório de ativos e posições de investimento.
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -60,23 +60,39 @@ class AssetRepository(BaseRepository[Asset]):
 
     async def get_consolidated_position(self, asset_id: int) -> Decimal:
         """
-        Retorna a quantidade líquida atual do ativo:
+        Retorna a quantidade líquida atual do ativo considerando apenas
+        operações com sinal consistente:
 
-            posição = SUM(quantity de todas as operações)
+            BUY  com quantity > 0  → soma positiva (compra real)
+            SELL com quantity < 0  → soma negativa (venda real)
 
-        Compras têm quantity positiva; vendas têm quantity negativa.
-        Operações com quantity=0 (ajustes zerados) são ignoradas.
-        Retorna 0 se não houver operações ou se o ativo foi totalmente vendido.
+        Entradas inconsistentes (SELL positivo, BUY negativo, qty=0) são
+        ignoradas via CASE, tornando o cálculo robusto contra dados de
+        ajustes antigos com sinal errado.
         """
         result = await self._session.execute(
             select(
-                func.coalesce(func.sum(AssetPosition.quantity), Decimal("0"))
-            ).where(
-                AssetPosition.asset_id == asset_id,
-                AssetPosition.quantity != 0,  # ignora ajustes zerados
-            )
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                (AssetPosition.operation_type == OperationType.BUY)
+                                & (AssetPosition.quantity > 0),
+                                AssetPosition.quantity,
+                            ),
+                            (
+                                (AssetPosition.operation_type == OperationType.SELL)
+                                & (AssetPosition.quantity < 0),
+                                AssetPosition.quantity,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    Decimal("0"),
+                )
+            ).where(AssetPosition.asset_id == asset_id)
         )
-        return result.scalar_one() or Decimal("0")
+        return result.scalar() or Decimal("0")
 
     # -----------------------------------------------------------------
     # Preço médio ponderado (aproximação)
@@ -84,39 +100,52 @@ class AssetRepository(BaseRepository[Asset]):
 
     async def calculate_avg_price(self, asset_id: int) -> Decimal:
         """
-        Preço médio ponderado das COMPRAS reais do ativo (CMP aproximado).
+        Preço médio ponderado pelo método CMP iterativo (Custo Médio Ponderado).
 
-        Fórmula:
-            preço_médio = SUM(qty × price) / SUM(qty)
-            apenas para operações BUY com quantity > 0.
+        Processa todas as operações em ordem cronológica (id como desempate):
 
-        Ignora: vendas, ajustes com qty=0 e operações com qty negativa.
-        Retorna 0 se não houver compras reais.
+          BUY  qty>0 price>0 → atualiza a média:
+                avg = (pos_atual × avg_atual + qty × price) / (pos_atual + qty)
+          SELL qty<0         → mantém a média; reduz a posição.
+                              Se posição chegar a 0, reseta avg para 0.
+
+        O reset ao zerar é fundamental para o ajuste manual funcionar:
+        após um SELL que zera a posição seguido de um BUY com o novo preço
+        alvo, o avg reflete exatamente o novo preço — sem contaminação do
+        histórico anterior.
+
+        Retorna 0 se não houver posição ativa.
         """
         result = await self._session.execute(
-            select(
-                func.coalesce(
-                    func.sum(AssetPosition.quantity * AssetPosition.unit_price),
-                    Decimal("0"),
-                ).label("total_cost"),
-                func.coalesce(
-                    func.sum(AssetPosition.quantity),
-                    Decimal("0"),
-                ).label("total_qty"),
-            ).where(
-                AssetPosition.asset_id == asset_id,
-                AssetPosition.operation_type == OperationType.BUY,
-                AssetPosition.quantity > 0,  # apenas compras reais
-            )
+            select(AssetPosition)
+            .where(AssetPosition.asset_id == asset_id)
+            .order_by(AssetPosition.operation_date, AssetPosition.id)
         )
-        row = result.one()
-        total_cost: Decimal = row.total_cost
-        total_qty: Decimal = row.total_qty
+        operations = result.scalars().all()
 
-        if not total_qty or total_qty == 0:
-            return Decimal("0")
+        current_qty = Decimal("0")
+        current_avg = Decimal("0")
 
-        return (Decimal(str(total_cost)) / Decimal(str(total_qty))).quantize(Decimal("0.000001"))
+        for op in operations:
+            qty   = Decimal(str(op.quantity))
+            price = Decimal(str(op.unit_price))
+
+            if op.operation_type == OperationType.BUY and qty > 0 and price > 0:
+                # CMP: recalcula a média ponderada incluindo a nova compra
+                if current_qty > 0:
+                    current_avg = (current_qty * current_avg + qty * price) / (current_qty + qty)
+                else:
+                    current_avg = price          # primeira compra (ou após zerar)
+                current_qty += qty
+
+            elif op.operation_type == OperationType.SELL and qty < 0:
+                # Venda: avg não muda, apenas reduz a posição
+                current_qty += qty               # qty é negativo → subtrai
+                if current_qty <= 0:
+                    current_qty = Decimal("0")
+                    current_avg = Decimal("0")   # posição zerada — reseta a base
+
+        return current_avg.quantize(Decimal("0.000001"))
 
     async def get_asset_current_value(
         self,
@@ -177,43 +206,69 @@ class AssetRepository(BaseRepository[Asset]):
 
     async def get_portfolio_summary_by_type(
         self,
-    ) -> dict[AssetType, dict[str, Decimal]]:
+    ) -> list[dict[str, Decimal]]:
         """
         Retorna o custo investido agrupado por tipo de ativo.
 
-        Para cada AssetType presente na carteira retorna:
-            {
-                "buy_cost":      custo total das compras (qty * price + fees),
-                "sell_proceeds": receita total das vendas (qty * price - fees),
-                "net_quantity":  posição líquida atual,
-            }
+        Para cada AssetType presente na carteira retorna um dict com:
+            asset_type    — tipo do ativo
+            buy_cost      — soma de (qty × price + fees) apenas para
+                            BUY com qty > 0 (compras reais)
+            sell_proceeds — soma de (abs(qty) × price − fees) apenas para
+                            SELL com qty < 0 (vendas reais com sinal correto)
+            net_invested  — buy_cost − sell_proceeds
+            net_quantity  — posição líquida (BUY+ corretos − SELL− corretos)
 
-        O "valor de mercado" não é calculado aqui — depende de preços
-        atuais obtidos por APIs externas (yfinance, python-bcb).
-        Essa responsabilidade fica na camada de serviço, que combina
-        estes dados com as cotações em tempo real.
+        Usa CASE explícito por sinal para ser robusto contra entradas
+        históricas com sinal incorreto (e.g. SELL armazenado com qty > 0).
         """
-        # Consulta que agrega buy_cost, sell_proceeds e net_quantity
-        # por tipo de ativo, fazendo JOIN entre AssetPosition e Asset.
         result = await self._session.execute(
             select(
                 Asset.asset_type,
                 func.coalesce(
                     func.sum(
-                        AssetPosition.quantity * AssetPosition.unit_price + AssetPosition.fees
-                    ).filter(AssetPosition.operation_type == OperationType.BUY),
+                        case(
+                            (
+                                (AssetPosition.operation_type == OperationType.BUY)
+                                & (AssetPosition.quantity > 0),
+                                AssetPosition.quantity * AssetPosition.unit_price
+                                + AssetPosition.fees,
+                            ),
+                            else_=0,
+                        )
+                    ),
                     Decimal("0"),
                 ).label("buy_cost"),
                 func.coalesce(
                     func.sum(
-                        # Em vendas, quantity é negativa; abs() retorna o valor positivo
-                        func.abs(AssetPosition.quantity) * AssetPosition.unit_price
-                        - AssetPosition.fees
-                    ).filter(AssetPosition.operation_type == OperationType.SELL),
+                        case(
+                            (
+                                (AssetPosition.operation_type == OperationType.SELL)
+                                & (AssetPosition.quantity < 0),
+                                func.abs(AssetPosition.quantity) * AssetPosition.unit_price
+                                - AssetPosition.fees,
+                            ),
+                            else_=0,
+                        )
+                    ),
                     Decimal("0"),
                 ).label("sell_proceeds"),
                 func.coalesce(
-                    func.sum(AssetPosition.quantity),
+                    func.sum(
+                        case(
+                            (
+                                (AssetPosition.operation_type == OperationType.BUY)
+                                & (AssetPosition.quantity > 0),
+                                AssetPosition.quantity,
+                            ),
+                            (
+                                (AssetPosition.operation_type == OperationType.SELL)
+                                & (AssetPosition.quantity < 0),
+                                AssetPosition.quantity,
+                            ),
+                            else_=0,
+                        )
+                    ),
                     Decimal("0"),
                 ).label("net_quantity"),
             )
@@ -222,12 +277,13 @@ class AssetRepository(BaseRepository[Asset]):
             .order_by(Asset.asset_type)
         )
 
-        summary: dict[AssetType, dict[str, Decimal]] = {}
-        for row in result.all():
-            summary[row.asset_type] = {
+        return [
+            {
+                "asset_type":    row.asset_type,
                 "buy_cost":      row.buy_cost,
                 "sell_proceeds": row.sell_proceeds,
+                "net_invested":  row.buy_cost - row.sell_proceeds,
                 "net_quantity":  row.net_quantity,
             }
-
-        return summary
+            for row in result.all()
+        ]

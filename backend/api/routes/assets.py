@@ -37,6 +37,37 @@ portfolio_router = APIRouter(prefix="/portfolio", tags=["Carteira"])
 
 
 # -----------------------------------------------------------------
+# Validação de sinal BUY/SELL
+# -----------------------------------------------------------------
+
+def validate_position(operation_type: OperationType, quantity: Decimal) -> None:
+    """
+    Garante que compras tenham quantidade positiva e vendas, negativa.
+
+    Levanta HTTP 422 com mensagem amigável em caso de violação,
+    evitando que dados inconsistentes cheguem ao banco.
+    """
+    if operation_type == OperationType.BUY and quantity <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Compra deve ter quantidade positiva.",
+        )
+    if operation_type == OperationType.SELL and quantity >= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Venda deve ter quantidade negativa. "
+                "Informe o valor negativo (ex: -100)."
+            ),
+        )
+    if quantity == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Quantidade não pode ser zero.",
+        )
+
+
+# -----------------------------------------------------------------
 # /assets
 # -----------------------------------------------------------------
 
@@ -108,6 +139,8 @@ async def register_operation(
     db: AsyncSession = Depends(get_db),
 ):
     """Registra uma compra, venda ou evento corporativo para o ativo."""
+    # Valida o sinal de quantidade para BUY/SELL antes de gravar
+    validate_position(payload.operation_type, payload.quantity)
     repo = AssetRepository(db)
     if not await repo.exists(asset_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ativo não encontrado")
@@ -131,14 +164,18 @@ async def adjust_asset_position(
     """
     Ajusta a posição líquida de um ativo diretamente.
 
-    Dentro de uma única transação atômica:
-      1. Cria uma operação SELL com quantity negativa igual à posição atual,
-         zerando completamente o saldo anterior.
-      2. Cria uma operação BUY com a quantidade e preço médio alvo.
+    Estratégia zero + recria (dentro de uma única transação atômica):
+      1. Se houver posição atual, cria SELL com quantity NEGATIVA igual à
+         posição líquida, zerando completamente o saldo anterior.
+      2. Se target_quantity > 0, cria BUY com a quantidade e preço alvo.
 
-    Isso preserva o histórico completo de operações e garante que
-    ``get_consolidated_position`` e ``calculate_avg_price`` retornem os
-    valores exatos informados após o ajuste.
+    Isso garante que após o ajuste:
+      - get_consolidated_position() == target_quantity  (exato)
+      - calculate_avg_price()       == target_avg_price (exato)
+
+    A abordagem delta (criar apenas a diferença) NÃO funciona para preço
+    médio: calculate_avg_price faz média ponderada de todos os BUYs, então
+    o preço alvo nunca seria atingido de forma precisa.
     """
     repo = AssetRepository(db)
     asset = await repo.get_by_id(asset_id)
@@ -151,35 +188,31 @@ async def adjust_asset_position(
     note = f"[AJUSTE] {payload.reason}" if payload.reason else "[AJUSTE MANUAL DE POSIÇÃO]"
     ops_created = 0
 
-    # --- Passo 1: zera a posição atual com um SELL de quantidade negativa ---
+    # Passo 1: zera a posição atual com um SELL de quantidade NEGATIVA
     if current_qty != Decimal("0"):
-        sell = AssetPosition(
+        sell_price = current_avg if current_avg > Decimal("0") else Decimal("0.01")
+        db.add(AssetPosition(
             asset_id=asset_id,
             operation_date=payload.op_date,
-            # Quantidade NEGATIVA: cancela exatamente a posição líquida atual.
-            # Como get_consolidated_position = SUM(quantity), inserir -current_qty
-            # leva o saldo a zero antes de criar a nova posição.
-            quantity=-current_qty,
-            unit_price=current_avg if current_avg > Decimal("0") else Decimal("0.01"),
+            quantity=-current_qty,          # NEGATIVO — cancela exatamente a posição líquida
+            unit_price=sell_price,
             fees=Decimal("0.00"),
             operation_type=OperationType.SELL,
             notes=note,
-        )
-        db.add(sell)
+        ))
         ops_created += 1
 
-    # --- Passo 2: cria a nova posição alvo ---
+    # Passo 2: recria a posição com os valores alvo
     if payload.target_quantity > Decimal("0"):
-        buy = AssetPosition(
+        db.add(AssetPosition(
             asset_id=asset_id,
             operation_date=payload.op_date,
-            quantity=payload.target_quantity,
+            quantity=payload.target_quantity,   # POSITIVO
             unit_price=payload.target_avg_price,
             fees=Decimal("0.00"),
             operation_type=OperationType.BUY,
             notes=note,
-        )
-        db.add(buy)
+        ))
         ops_created += 1
 
     await db.flush()
@@ -206,13 +239,13 @@ async def get_portfolio_summary(db: AsyncSession = Depends(get_db)):
     raw = await repo.get_portfolio_summary_by_type()
     by_type = [
         PortfolioTypeEntryOut(
-            asset_type=asset_type,
-            buy_cost=v["buy_cost"],
-            sell_proceeds=v["sell_proceeds"],
-            net_invested=v["buy_cost"] - v["sell_proceeds"],
-            net_quantity=v["net_quantity"],
+            asset_type=r["asset_type"],
+            buy_cost=r["buy_cost"],
+            sell_proceeds=r["sell_proceeds"],
+            net_invested=r["net_invested"],
+            net_quantity=r["net_quantity"],
         )
-        for asset_type, v in raw.items()
+        for r in raw
     ]
     total_invested = sum((e.net_invested for e in by_type), Decimal("0.00"))
     return PortfolioSummaryOut(by_type=by_type, total_invested=total_invested)

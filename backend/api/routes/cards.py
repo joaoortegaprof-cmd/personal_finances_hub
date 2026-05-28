@@ -28,7 +28,7 @@ from backend.api.schemas.accounts import (
 )
 from backend.core.database import get_db
 from backend.models.account import CreditCard, CreditCardInvoice, InvoiceStatus
-from backend.models.transaction import Transaction
+from backend.models.transaction import Transaction, TransactionType
 from backend.repositories.account_repository import AccountRepository
 
 router = APIRouter(prefix="/cards", tags=["Cartões"])
@@ -85,10 +85,18 @@ async def delete_card(card_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/{card_id}/available-limit")
 async def get_card_available_limit(card_id: int, db: AsyncSession = Depends(get_db)):
     """
-    Retorna o limite disponível do cartão:
-      - credit_limit: limite total cadastrado
-      - used_amount:  total de compras na fatura aberta
-      - available:    credit_limit - used_amount
+    Retorna o limite disponível do cartão.
+
+    Campos retornados:
+      - credit_limit:      limite total cadastrado
+      - used_amount:       soma das compras CREDIT_EXPENSE na fatura aberta
+      - available:         credit_limit - used_amount (mínimo 0)
+      - open_invoice_id:   ID da fatura aberta (None se não houver)
+      - invoice_status:    status da fatura aberta
+
+    Bug corrigido: o cálculo anterior somava TODOS os lançamentos da fatura,
+    incluindo INVOICE_PAYMENT — que deve restaurar limite, não consumi-lo.
+    Agora apenas transações do tipo CREDIT_EXPENSE entram no used_amount.
     """
     repo = AccountRepository(db)
     card = await repo.get_card_by_id(card_id)
@@ -97,20 +105,36 @@ async def get_card_available_limit(card_id: int, db: AsyncSession = Depends(get_
 
     open_invoice = await repo.get_open_invoice(card_id)
 
-    used_amount = Decimal("0.00")
-    if open_invoice:
-        result = await db.execute(
-            select(func.coalesce(func.sum(Transaction.amount), Decimal("0.00")))
-            .where(Transaction.invoice_id == open_invoice.id)
+    if not open_invoice:
+        # Sem fatura aberta → limite totalmente disponível
+        return {
+            "credit_limit":    float(card.credit_limit),
+            "used_amount":     0.0,
+            "available":       float(card.credit_limit),
+            "open_invoice_id": None,
+            "invoice_status":  None,
+        }
+
+    # Soma apenas compras no crédito — pagamentos de fatura não consomem limite
+    result = await db.execute(
+        select(func.coalesce(func.sum(Transaction.amount), Decimal("0.00")))
+        .where(
+            Transaction.credit_card_id == card_id,
+            Transaction.invoice_id == open_invoice.id,
+            Transaction.transaction_type == TransactionType.CREDIT_EXPENSE,
         )
-        used_amount = result.scalar() or Decimal("0.00")
+    )
+    used_amount = result.scalar() or Decimal("0.00")
 
     limit = card.credit_limit
+    available = float(limit) - float(used_amount)
+
     return {
-        "credit_limit":      float(limit),
-        "used_amount":       float(used_amount),
-        "available":         float(limit - used_amount),
-        "open_invoice_id":   open_invoice.id if open_invoice else None,
+        "credit_limit":    float(limit),
+        "used_amount":     float(used_amount),
+        "available":       max(0.0, available),
+        "open_invoice_id": open_invoice.id,
+        "invoice_status":  open_invoice.status,
     }
 
 

@@ -19,6 +19,8 @@ import uvicorn
 from loguru import logger
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from scripts.backup import create_backup
+
 # ── Diretórios ──────────────────────────────────────────────────────────────
 
 ROOT = Path(__file__).parent
@@ -84,9 +86,41 @@ def _wait_for_api(url: str, timeout: float = 15.0, interval: float = 0.3) -> boo
 
 # ── Inicialização principal ──────────────────────────────────────────────────
 
+def _backup_scheduler() -> None:
+    """
+    Thread daemon que cria um backup do banco a cada 24 horas.
+
+    Daemon=True garante que não impeça o encerramento do processo
+    quando o usuário fechar a janela principal.
+    """
+    while True:
+        time.sleep(24 * 60 * 60)   # aguarda 24 horas
+        try:
+            create_backup()
+        except Exception as exc:
+            logger.warning("Erro no backup automático: {}", exc)
+
+
 def main() -> None:
     _setup_logger()
     logger.info("Iniciando FinanceHub…")
+
+    # ── Backup imediato na inicialização ─────────────────────────────────
+    # Garante que sempre existe ao menos um backup antes de abrir o banco.
+    try:
+        backup_path = create_backup()
+        if backup_path:
+            logger.info("Backup inicial criado: {}", backup_path)
+    except Exception as exc:
+        logger.warning("Falha no backup inicial (não crítico): {}", exc)
+
+    # ── Agendador de backup diário ────────────────────────────────────────
+    backup_thread = threading.Thread(
+        target=_backup_scheduler,
+        daemon=True,
+        name="backup-scheduler",
+    )
+    backup_thread.start()
 
     # Importa as configurações depois de _setup_logger para que erros de
     # importação também sejam capturados pelo loguru.

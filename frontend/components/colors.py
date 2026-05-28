@@ -61,28 +61,34 @@ COLOR_OTHER           = "#8B90A7"   # Outros → cinza médio
 
 # ── Paletas por categoria (tons do escuro ao claro para múltiplos ativos) ───
 PALETTE_STOCK = [
-    "#00C896", "#00A87E", "#00D4A8", "#00E5AC",
-    "#7FFFD4", "#34D399", "#6EE7B7",
+    "#00C896", "#007A5E", "#00E5AC",
+    "#004D3B", "#33D4AB", "#006B52",
+    "#66E8C8", "#003D2E", "#99F0DC",
 ]
 PALETTE_FII = [
-    "#4A9EFF", "#2980B9", "#5DADE2", "#85C1E9",
-    "#AED6F1", "#1A6EC4", "#378ADD",
+    "#4A9EFF", "#1A5FA0", "#7DB8FF",
+    "#0A3D70", "#A8D1FF", "#2B7FD4",
+    "#1459B3", "#5AAAFF", "#0D4C8C",
 ]
 PALETTE_ETF = [
-    "#9B59B6", "#8E44AD", "#A569BD", "#BB8FCE",
-    "#D2B4DE", "#7D3C98", "#C39BD3",
+    "#9B59B6", "#5C2D7A", "#C07FD4",
+    "#3A1A4D", "#D4A0E8", "#7A3D9B",
+    "#4A1F63", "#B36FCC", "#6B2D8C",
 ]
 PALETTE_TREASURY = [
-    "#F39C12", "#D68910", "#F0B27A", "#FAD7A0",
-    "#F5CBA7", "#DC7633", "#E59866",
+    "#F39C12", "#A06208", "#F7C04A",
+    "#6B4005", "#FBD88A", "#D4870A",
+    "#8A5206", "#F5AD3A", "#C07808",
 ]
 PALETTE_FIXED_INCOME = [
-    "#1ABC9C", "#17A589", "#48C9B0", "#76D7C4",
-    "#A2D9CE", "#0E8A7A", "#45B7AA",
+    "#1ABC9C", "#0E7A65", "#4DD4B8",
+    "#074D3F", "#80E8D4", "#148A74",
+    "#0A5E4A", "#35C9A8", "#117A64",
 ]
 PALETTE_CRYPTO = [
-    "#E67E22", "#CA6F1E", "#EB984E", "#F0B27A",
-    "#FAD7A0", "#BA4A00", "#D35400",
+    "#E67E22", "#8A3D00", "#F5A050",
+    "#5C2800", "#F7C08A", "#B85A00",
+    "#7A3C00", "#F08030", "#A04800",
 ]
 
 # ── Mapa asset_type → cor principal ─────────────────────────────────────────

@@ -2001,18 +2001,21 @@ class InvestmentsPage(QWidget):
 
     def _build_summary_cards(self) -> QHBoxLayout:
         """
-        Linha de 3 cards: total investido, número de ativos e distribuição por tipo.
-
-        Os cards são ocultos durante o loading e exibidos em _on_data_ready.
+        Linha de 5 cards: total investido, valor atual, rentabilidade, nº ativos, maior posição.
         """
         row = QHBoxLayout()
         row.setSpacing(16)
 
-        self._card_total = _SummaryCard("Total Investido", _BLUE)
-        self._card_assets = _SummaryCard("Ativos na Carteira", _WHITE)
-        self._card_distribution = _SummaryCard("Maior Posição", _ORANGE)
+        self._card_total        = _SummaryCard("Total Investido",    "#C8CAD8")
+        self._card_current      = _SummaryCard("Valor Atual",        "#00C896")
+        self._card_return       = _SummaryCard("Rentabilidade Total", "#00C896")
+        self._card_assets       = _SummaryCard("Ativos na Carteira", _WHITE)
+        self._card_distribution = _SummaryCard("Maior Posição",      _ORANGE)
 
-        for card in [self._card_total, self._card_assets, self._card_distribution]:
+        for card in [
+            self._card_total, self._card_current, self._card_return,
+            self._card_assets, self._card_distribution,
+        ]:
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             card.setVisible(False)
             row.addWidget(card)
@@ -2127,7 +2130,14 @@ class InvestmentsPage(QWidget):
         active_count = sum(
             1 for p in positions if float(p.get("net_quantity", 0)) > 0
         )
-        self._card_total.set_value(_fmt_brl(total_invested))
+        total_return_pct = float(portfolio.get("total_return_pct", 0))
+        cur_color  = "#00C896" if total_current >= total_invested else "#FF6B6B"
+        ret_color  = "#00C896" if total_return_pct >= 0 else "#FF6B6B"
+        ret_sign   = "+" if total_return_pct >= 0 else ""
+
+        self._card_total.set_value(_fmt_brl(total_invested), color="#C8CAD8")
+        self._card_current.set_value(_fmt_brl(total_current), color=cur_color)
+        self._card_return.set_value(f"{ret_sign}{total_return_pct:.2f}%", color=ret_color)
         self._card_assets.set_value(str(active_count))
 
         # Maior posição individual (por ativo, não por tipo)
@@ -2156,7 +2166,10 @@ class InvestmentsPage(QWidget):
     # ------------------------------------------------------------------
 
     def _set_content_visible(self, visible: bool) -> None:
-        for card in [self._card_total, self._card_assets, self._card_distribution]:
+        for card in [
+            self._card_total, self._card_current, self._card_return,
+            self._card_assets, self._card_distribution,
+        ]:
             card.setVisible(visible)
         self._portfolio_content.setVisible(visible)
         self._liquidity_section.setVisible(visible)

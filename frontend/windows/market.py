@@ -892,6 +892,8 @@ class MarketPage(QWidget):
         self._worker: PortfolioQuotesWorker | None = None
         self._lookup_worker: TickerLookupWorker | None = None
         self._sections: dict[str, dict] = {}
+        self._section_entries: dict[str, list[dict]] = {}
+        self._sort_state: dict[str, tuple[int, bool]] = {}  # type_key → (col, ascending)
         self._build_ui()
         self._load_portfolio()
 
@@ -1041,6 +1043,7 @@ class MarketPage(QWidget):
         hdr.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
 
         table.itemClicked.connect(self._on_row_clicked)
+        hdr.sectionClicked.connect(lambda col, t=table: self._on_header_clicked(t, col))
         return table
 
     # ------------------------------------------------------------------
@@ -1131,8 +1134,53 @@ class MarketPage(QWidget):
                 f"font-size: 13px; font-weight: 600; color: {_C_WHITE}; padding: 4px 0;"
             )
 
+            self._section_entries[type_key] = list(cat_entries)
+            self._sort_state.pop(type_key, None)
             self._fill_table(sec["table"], cat_entries)
             sec["container"].setVisible(True)
+
+    def _on_header_clicked(self, table: QTableWidget, col: int) -> None:
+        type_key = next(
+            (k for k, s in self._sections.items() if s["table"] is table), None
+        )
+        if type_key is None or type_key not in self._section_entries:
+            return
+
+        prev_col, prev_asc = self._sort_state.get(type_key, (-1, True))
+        ascending = not prev_asc if col == prev_col else True
+        self._sort_state[type_key] = (col, ascending)
+
+        # Atualizar labels do cabeçalho
+        for i, lbl in enumerate(_TABLE_HEADERS):
+            arrow = (" ↑" if ascending else " ↓") if i == col else ""
+            table.setHorizontalHeaderItem(i, QTableWidgetItem(lbl + arrow))
+
+        col_key_map = {
+            _COL_TICKER:   ("ticker",          str),
+            _COL_NAME:     ("name",             str),
+            _COL_QTD:      ("net_quantity",     float),
+            _COL_AVG:      ("avg_price",        float),
+            _COL_CURRENT:  ("current_price",    float),
+            _COL_INVESTED: ("valor_investido",  float),
+            _COL_ACTUAL:   ("valor_atual",      float),
+            _COL_RETURN:   ("rentabilidade",    float),
+            _COL_DAY:      ("change_pct",       float),
+        }
+        if col not in col_key_map:
+            return
+        field, cast = col_key_map[col]
+
+        def sort_key(e):
+            v = e.get(field)
+            if v is None:
+                return float("-inf") if not ascending else float("inf")
+            try:
+                return cast(v)
+            except (TypeError, ValueError):
+                return str(v)
+
+        entries = sorted(self._section_entries[type_key], key=sort_key, reverse=not ascending)
+        self._fill_table(table, entries)
 
     def _fill_table(self, table: QTableWidget, entries: list[dict]) -> None:
         table.setRowCount(len(entries))

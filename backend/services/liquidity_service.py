@@ -212,10 +212,21 @@ class LiquidityService:
         Chama o repositório para calcular posição líquida e preço médio
         separadamente — duas queries pequenas e indexadas por asset_id.
         Em volume alto (>500 ativos), otimize agrupando num único SELECT.
+
+        Ativos com preço médio = 0 (dados incompletos/inválidos) são marcados
+        com estimated_value = 0 para que o chamador os ignore no breakdown —
+        evita distorção do total de liquidez por posições sem custo registrado.
         """
         net_quantity = await self._asset_repo.get_consolidated_position(asset.id)
         avg_cost = await self._asset_repo.calculate_avg_price(asset.id)
-        estimated_value = (net_quantity * avg_cost).quantize(Decimal("0.01"))
+
+        # Ignorar ativos cujo preço médio não pôde ser calculado (sem BUYs
+        # com price > 0).  Valor zero preserva o filtro `estimated_value > 0`
+        # do chamador sem introduzir valores inflados ou negativos no breakdown.
+        if avg_cost <= Decimal("0"):
+            estimated_value = Decimal("0.00")
+        else:
+            estimated_value = (net_quantity * avg_cost).quantize(Decimal("0.01"))
 
         # Ativos com vencimento têm risco de deságio por marcação a mercado:
         # Tesouro Prefixado e IPCA+ podem valer menos que o custo de compra

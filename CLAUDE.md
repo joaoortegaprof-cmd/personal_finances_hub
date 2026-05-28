@@ -29,7 +29,21 @@ com potencial de virar produto comercial no futuro.
 - Commits pequenos e descritivos (Conventional Commits)
 
 ## Status atual
-Início do projeto — estrutura de pastas ainda não criada.
+Projeto em desenvolvimento ativo — todas as páginas principais implementadas.
+
+## Banco de dados e migrações (Alembic)
+
+Banco: `finance_hub.db` na raiz do projeto (SQLite dev).
+Alembic configurado em `alembic.ini` + `data/migrations/`.
+
+**Para novas migrações após alterar um model:**
+```bash
+alembic revision --autogenerate -m "descricao_breve"
+alembic upgrade head
+```
+
+**Backup automático:** `scripts/backup.py` — executado ao iniciar e a cada 24 h.
+Backups salvos em `data/backups/`, mantendo os últimos 30.
 
 ## Funcionalidades avançadas — Perspectiva do investidor
 
