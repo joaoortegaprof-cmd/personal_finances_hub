@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="48" fill="#1A1D2E"/>
+  <text x="128" y="160" font-size="140" text-anchor="middle" font-family="sans-serif">💰</text>
+  <rect x="32" y="180" width="192" height="8" rx="4" fill="#00C896"/>
+</svg>

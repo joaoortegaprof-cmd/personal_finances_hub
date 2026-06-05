@@ -10,9 +10,37 @@ Sequência de inicialização:
 """
 
 import sys
+import os
+from pathlib import Path
+
+# Detectar se está rodando como executável PyInstaller
+if getattr(sys, 'frozen', False):
+    APP_DIR = Path(sys._MEIPASS)
+    DATA_DIR = Path(sys.executable).parent / 'data'
+else:
+    APP_DIR = Path(__file__).parent
+    DATA_DIR = APP_DIR / 'data'
+
+# Garantir diretórios necessários
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+(DATA_DIR / 'logs').mkdir(exist_ok=True)
+(DATA_DIR / 'backups').mkdir(exist_ok=True)
+
+# Configurar DATABASE_URL com path absoluto
+os.environ.setdefault(
+    'DATABASE_URL',
+    f'sqlite+aiosqlite:///{DATA_DIR}/financehub.db'
+)
+
+# Adicionar APP_DIR ao sys.path para imports
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+# Path do tema QSS
+THEME_PATH = APP_DIR / 'frontend' / 'styles' / 'theme.qss'
+
 import threading
 import time
-from pathlib import Path
 
 import requests
 import uvicorn
@@ -21,11 +49,6 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from scripts.backup import create_backup
 
-# ── Diretórios ──────────────────────────────────────────────────────────────
-
-ROOT = Path(__file__).parent
-LOG_DIR = ROOT / "data" / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Logger ───────────────────────────────────────────────────────────────────
 
@@ -41,13 +64,13 @@ def _setup_logger() -> None:
         colorize=True,
     )
 
-    # Arquivo — nível DEBUG, rotação diária, mantém 7 dias
+    # Arquivo — nível INFO, rotação semanal, mantém 1 mês
     logger.add(
-        LOG_DIR / "finance_hub.log",
-        level="DEBUG",
+        DATA_DIR / 'logs' / 'financehub_{time}.log',
+        rotation='1 week',
+        retention='1 month',
+        level='INFO',
         format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {name}:{line} | {message}",
-        rotation="00:00",   # novo arquivo à meia-noite
-        retention="7 days",
         encoding="utf-8",
     )
 
@@ -106,7 +129,6 @@ def main() -> None:
     logger.info("Iniciando FinanceHub…")
 
     # ── Backup imediato na inicialização ─────────────────────────────────
-    # Garante que sempre existe ao menos um backup antes de abrir o banco.
     try:
         backup_path = create_backup()
         if backup_path:
@@ -122,8 +144,6 @@ def main() -> None:
     )
     backup_thread.start()
 
-    # Importa as configurações depois de _setup_logger para que erros de
-    # importação também sejam capturados pelo loguru.
     try:
         from backend.core.config import settings
     except Exception as exc:
@@ -140,7 +160,7 @@ def main() -> None:
     api_thread = threading.Thread(
         target=_start_api_server,
         args=(host, port),
-        daemon=True,           # morre quando o processo principal termina
+        daemon=True,
         name="uvicorn-server",
     )
     api_thread.start()
@@ -164,12 +184,11 @@ def main() -> None:
 
         scheduler = NotificationScheduler(
             api_base=f"http://{host}:{port}",
-            interval_seconds=3600,   # verifica a cada hora
+            interval_seconds=3600,
         )
         scheduler.start()
         logger.info("NotificationScheduler iniciado.")
     except Exception as exc:
-        # Notificações são opcionais — não impedem a app de abrir
         logger.warning("Falha ao iniciar NotificationScheduler: {}", exc)
 
     # ── PyQt6 ─────────────────────────────────────────────────────────────
@@ -183,6 +202,13 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("FinanceHub")
     app.setOrganizationName("FinanceHub")
+
+    # Carregar tema QSS
+    if THEME_PATH.exists():
+        with open(THEME_PATH, 'r', encoding='utf-8') as f:
+            app.setStyleSheet(f.read())
+    else:
+        logger.warning("Tema não encontrado em {}", THEME_PATH)
 
     try:
         window = MainWindow()
@@ -202,7 +228,6 @@ def main() -> None:
 
 def _show_fatal_error(title: str, message: str) -> None:
     """Exibe uma caixa de erro mesmo quando a janela principal ainda não existe."""
-    # QApplication precisa existir para mostrar diálogos
     app = QApplication.instance() or QApplication(sys.argv)
     QMessageBox.critical(None, title, message)
 

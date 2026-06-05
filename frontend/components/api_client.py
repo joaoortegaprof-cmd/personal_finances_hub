@@ -506,6 +506,10 @@ class ApiClient:
         """Registra um provento recebido."""
         return self._post("/dividends", payload)
 
+    def get_dividends_total(self, asset_id: int) -> dict:
+        """Retorna total de proventos e yield on cost para um ativo."""
+        return self._get(f"/dividends/total/{asset_id}")
+
     def import_dividends(self, asset_id: int, years: int = 2) -> dict:
         """
         Importa histórico de dividendos via yfinance para o ativo dado.

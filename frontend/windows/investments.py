@@ -198,6 +198,15 @@ class InvestmentsWorker(QThread):
                     except Exception:
                         pass   # cotação é opcional — falha silenciosa
 
+                # Enriquece com total de dividendos recebidos
+                try:
+                    div_data = self._client.get_dividends_total(asset["id"])
+                    pos["total_dividends"] = float(div_data.get("total_dividends", 0))
+                    pos["yield_on_cost"]   = float(div_data.get("yield_on_cost", 0))
+                except Exception:
+                    pos["total_dividends"] = 0.0
+                    pos["yield_on_cost"]   = 0.0
+
                 positions.append(pos)
 
             # Calcula totais da carteira a partir das posições (não do /portfolio/summary)
@@ -1677,7 +1686,7 @@ class AssetCategorySection(QWidget):
         headers = [
             "Ticker / Nome", "Quantidade", "Preço Médio",
             "Cotação Atual", "Valor Investido", "Valor Atual",
-            "Rentab. %", "Variação Dia %", "Ações",
+            "Rentab. %", "Variação Dia %", "Proventos", "Ações",
         ]
         n = len(self._positions)
         table = QTableWidget(n, len(headers))
@@ -1688,13 +1697,12 @@ class AssetCategorySection(QWidget):
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(_ROW_H)
 
-        # Etapa 5: sem scrollbars internos
         table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         hdr = table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col, w in [(1, 100), (2, 120), (3, 120), (4, 130), (5, 130), (6, 110), (7, 110), (8, 90)]:
+        for col, w in [(1, 100), (2, 120), (3, 120), (4, 130), (5, 130), (6, 110), (7, 110), (8, 110), (9, 90)]:
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             table.setColumnWidth(col, w)
 
@@ -1760,7 +1768,24 @@ class AssetCategorySection(QWidget):
             table.setItem(row, 6, _it(f"{rent_pct:+.2f}%", r_col, right=True))
             table.setItem(row, 7, _it(day_text, d_col, right=True))
 
-            # Col 8: editar + excluir
+            # Col 8: proventos recebidos + yield on cost
+            total_div = float(pos.get("total_dividends", 0))
+            yoc       = float(pos.get("yield_on_cost",   0))
+            if total_div > 0:
+                div_text  = f"{_fmt_brl(total_div)}\nYOC {yoc:.1f}%"
+                div_color = "#FFD54F"
+            else:
+                div_text  = "—"
+                div_color = "#4A4D63"
+            div_item = _it(div_text, div_color, right=True)
+            if total_div > 0:
+                div_item.setToolTip(
+                    f"Total recebido: {_fmt_brl(total_div)}\n"
+                    f"Yield on Cost: {yoc:.2f}%"
+                )
+            table.setItem(row, 8, div_item)
+
+            # Col 9: editar + excluir
             cw = QWidget(table)
             cl = QHBoxLayout(cw)
             cl.setContentsMargins(4, 4, 4, 4)
@@ -1781,7 +1806,7 @@ class AssetCategorySection(QWidget):
             db.clicked.connect(lambda _, aid=asset_id, t=ticker: self.delete_requested.emit(aid, t))
             cl.addWidget(db)
 
-            table.setCellWidget(row, 8, cw)
+            table.setCellWidget(row, 9, cw)
 
 
 # ======================================================================

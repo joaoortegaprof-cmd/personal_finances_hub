@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QScrollArea,
     QSizePolicy,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -122,17 +123,45 @@ _ASSET_SLOT_COLORS = [
 _MONTH_ABBR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
                "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
-SECTOR_COLORS: dict[str, str] = {
-    "Energia":           "#E67E22",
-    "Financeiro":        "#3498DB",
-    "Utilidades":        "#9B59B6",
-    "Imóveis":           "#1ABC9C",
-    "Consumo":           "#E74C3C",
-    "Saúde":             "#2ECC71",
-    "Tecnologia":        "#F39C12",
-    "Industrial":        "#95A5A6",
-    "Materiais":         "#D35400",
-    "Não classificado":  "#7F8C8D",
+# Paleta única de alto contraste — 10 matizes distintos, legíveis em fundo escuro
+HIGH_CONTRAST_PALETTE = [
+    "#4FC3F7",  # azul celeste
+    "#EF5350",  # vermelho
+    "#FFD54F",  # amarelo âmbar
+    "#66BB6A",  # verde
+    "#FFA726",  # laranja
+    "#CE93D8",  # lilás
+    "#26C6DA",  # ciano
+    "#F06292",  # rosa
+    "#AED581",  # verde-lima
+    "#FF7043",  # laranja avermelhado
+]
+
+# Mantém aliases por categoria — reutilizam a mesma paleta de alto contraste
+STOCK_PALETTE    = HIGH_CONTRAST_PALETTE
+FII_PALETTE      = HIGH_CONTRAST_PALETTE
+ETF_PALETTE      = HIGH_CONTRAST_PALETTE
+TREASURY_PALETTE = HIGH_CONTRAST_PALETTE
+FIXED_PALETTE    = HIGH_CONTRAST_PALETTE
+CRYPTO_PALETTE   = HIGH_CONTRAST_PALETTE
+
+_CLASS_COLORS = {
+    "Ações":      "#4FC3F7",
+    "FIIs":       "#66BB6A",
+    "ETFs":       "#CE93D8",
+    "Tesouro":    "#FFD54F",
+    "Renda Fixa": "#26C6DA",
+    "Cripto":     "#FFA726",
+    "Outros":     "#9E9E9E",
+}
+_CLASS_KEYS = {
+    "Ações":      "stocks",
+    "FIIs":       "fiis",
+    "ETFs":       "etfs",
+    "Tesouro":    "treasury",
+    "Renda Fixa": "fixed_income",
+    "Cripto":     "crypto",
+    "Outros":     "other",
 }
 
 
@@ -533,14 +562,14 @@ class BarsCanvas(FigureCanvas):
                 linestyle="--", marker="o", markersize=3, zorder=4, label="Saldo")
 
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_xticklabels(labels, fontsize=9)
         ax.yaxis.set_major_formatter(
             plt.FuncFormatter(lambda v, _: f"R$ {v:,.0f}".replace(",", "."))
         )
         ax.axhline(0, color=_GRID_RGB, linewidth=0.8, zorder=2)
 
         ax.legend(
-            loc="upper left", fontsize=7,
+            loc="upper left", fontsize=8,
             facecolor=_BG_RGB, labelcolor=_TEXT_RGB,
             framealpha=0.85, edgecolor=_GRID_RGB,
             ncol=6,
@@ -584,7 +613,7 @@ class LineCanvas(FigureCanvas):
         ax.fill_between(x, values, alpha=0.12, color=_BLUE_RGB, zorder=2)
 
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, fontsize=8, rotation=30, ha="right")
+        ax.set_xticklabels(labels, fontsize=9, rotation=30, ha="right")
         ax.yaxis.set_major_formatter(
             plt.FuncFormatter(lambda v, _: f"R${v/1000:.0f}k" if abs(v) >= 1000 else f"R${v:.0f}")
         )
@@ -629,7 +658,7 @@ class DonutCanvas(FigureCanvas):
             "padding: 8px;"
             "border-radius: 6px;"
             "border: 1px solid #4A9EFF;"
-            "font-size: 11px;"
+            "font-size: 12px;"
         )
         self._tooltip_label.setWordWrap(False)
         self._tooltip_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -753,7 +782,7 @@ class SummaryCard(QFrame):
 
         self._sub_label = QLabel("")
         self._sub_label.setObjectName("cardSub")
-        self._sub_label.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        self._sub_label.setStyleSheet("color: #8B90A7; font-size: 12px;")
         self._sub_label.setVisible(False)
 
         layout.addWidget(self._value_label)
@@ -770,8 +799,8 @@ class SummaryCard(QFrame):
         self._value_label.setStyleSheet(f"color: {color or self._default_color};")
         self._sub_label.setText(sub)
         self._sub_label.setStyleSheet(
-            f"color: {sub_color}; font-size: 11px;"
-            if sub_color else "color: #8B90A7; font-size: 11px;"
+            f"color: {sub_color}; font-size: 12px;"
+            if sub_color else "color: #8B90A7; font-size: 12px;"
         )
         self._sub_label.setVisible(bool(sub))
 
@@ -801,9 +830,9 @@ class DebtProgressRow(QFrame):
         # Cabeçalho: nome + taxa
         header = QHBoxLayout()
         name_lbl = QLabel(f"{debt.get('name', '')}  ·  {debt.get('institution', '')}")
-        name_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 12px; font-weight: 600; background: transparent;")
+        name_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 13px; font-weight: 600; background: transparent;")
         rate_lbl = QLabel(f"{float(debt.get('interest_rate', 0)):.2f}% a.m.")
-        rate_lbl.setStyleSheet(f"color: {_RED}; font-size: 11px; background: transparent;")
+        rate_lbl.setStyleSheet(f"color: {_RED}; font-size: 12px; background: transparent;")
         rate_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(name_lbl)
         header.addStretch()
@@ -826,7 +855,7 @@ class DebtProgressRow(QFrame):
                 border: none;
                 border-radius: 4px;
                 color: white;
-                font-size: 10px;
+                font-size: 11px;
                 text-align: center;
             }}
             QProgressBar::chunk {{
@@ -842,7 +871,7 @@ class DebtProgressRow(QFrame):
         footer_lbl = QLabel(
             f"Pago: {_fmt_brl(paid_amt)}  ·  Restante: {_fmt_brl(remaining)}  ·  Total: {_fmt_brl(total_amt)}"
         )
-        footer_lbl.setStyleSheet("color: #8B90A7; font-size: 10px; background: transparent;")
+        footer_lbl.setStyleSheet("color: #8B90A7; font-size: 11px; background: transparent;")
 
         # Botão "Ver cronograma"
         self._schedule_btn = QPushButton("Ver cronograma ▾")
@@ -851,7 +880,7 @@ class DebtProgressRow(QFrame):
                 background: transparent;
                 color: #4A9EFF;
                 border: none;
-                font-size: 11px;
+                font-size: 12px;
                 text-align: left;
                 padding: 2px 0px;
             }
@@ -883,13 +912,13 @@ class DebtProgressRow(QFrame):
                 alternate-background-color: #252840;
                 color: #FFFFFF;
                 border: none;
-                font-size: 11px;
+                font-size: 12px;
                 gridline-color: #3A3D50;
             }
             QHeaderView::section {
                 background: #2A2D3E;
                 color: #8B90A7;
-                font-size: 10px;
+                font-size: 11px;
                 border: none;
                 padding: 4px;
             }
@@ -902,7 +931,7 @@ class DebtProgressRow(QFrame):
                 color: #8B90A7;
                 border: none;
                 border-radius: 4px;
-                font-size: 10px;
+                font-size: 11px;
                 padding: 4px 10px;
             }
             QPushButton:hover { color: #C8CAD8; background: #353850; }
@@ -988,7 +1017,7 @@ class AlertRow(QFrame):
 
         dot = QLabel("●")
         dot.setFixedWidth(14)
-        dot.setStyleSheet(f"color: {dot_color}; font-size: 11px;")
+        dot.setStyleSheet(f"color: {dot_color}; font-size: 12px;")
         dot.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         text_col = QVBoxLayout()
@@ -1031,7 +1060,7 @@ class CategoryDonutWidget(QFrame):
         cat_color = _COLOR_MAP.get(category, "#94A3B8")
         title = QLabel(category)
         title.setStyleSheet(
-            f"color: {cat_color}; font-size: 13px; font-weight: 700; background: transparent;"
+            f"color: {cat_color}; font-size: 14px; font-weight: 700; background: transparent;"
         )
         outer.addWidget(title)
 
@@ -1071,12 +1100,12 @@ class CategoryDonutWidget(QFrame):
 
             hdr = QHBoxLayout()
             dot_lbl = QLabel("●")
-            dot_lbl.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
+            dot_lbl.setStyleSheet(f"color: {color}; font-size: 12px; background: transparent;")
             dot_lbl.setFixedWidth(14)
             ticker_lbl = QLabel(asset["ticker"])
-            ticker_lbl.setStyleSheet(f"color: #FFFFFF; font-size: 11px; font-weight: 600; background: transparent;")
+            ticker_lbl.setStyleSheet(f"color: #FFFFFF; font-size: 12px; font-weight: 600; background: transparent;")
             val_lbl = QLabel(_fmt_brl(asset["value"]))
-            val_lbl.setStyleSheet("color: #E0E2EA; font-size: 11px; background: transparent;")
+            val_lbl.setStyleSheet("color: #E0E2EA; font-size: 12px; background: transparent;")
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             hdr.addWidget(dot_lbl)
             hdr.addWidget(ticker_lbl)
@@ -1084,7 +1113,7 @@ class CategoryDonutWidget(QFrame):
             hdr.addWidget(val_lbl)
 
             pct_lbl = QLabel(f"{pct:.1f}%")
-            pct_lbl.setStyleSheet("color: #E0E2EA; font-size: 11px; background: transparent;")
+            pct_lbl.setStyleSheet("color: #E0E2EA; font-size: 12px; background: transparent;")
             pct_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
 
             item_layout.addLayout(hdr)
@@ -1147,17 +1176,17 @@ class AlertHistoryRow(QFrame):
 
         dot = QLabel("●")
         dot.setFixedWidth(12)
-        dot.setStyleSheet(f"color: {dot_color}; font-size: 10px;")
+        dot.setStyleSheet(f"color: {dot_color}; font-size: 11px;")
         dot.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         text_col = QVBoxLayout()
         text_col.setSpacing(2)
 
         title_label = QLabel(entry.get("title", ""))
-        title_label.setStyleSheet("color: #E8EAED; font-size: 12px; font-weight: 600;")
+        title_label.setStyleSheet("color: #E8EAED; font-size: 13px; font-weight: 600;")
 
         msg_label = QLabel(entry.get("message", ""))
-        msg_label.setStyleSheet("color: #8B90A7; font-size: 11px;")
+        msg_label.setStyleSheet("color: #8B90A7; font-size: 12px;")
         msg_label.setWordWrap(True)
 
         text_col.addWidget(title_label)
@@ -1178,17 +1207,17 @@ class AlertHistoryRow(QFrame):
                 ts_display = ts_raw[:16]
 
         ts_label = QLabel(ts_display)
-        ts_label.setStyleSheet("color: #8B90A7; font-size: 10px;")
+        ts_label.setStyleSheet("color: #8B90A7; font-size: 11px;")
         ts_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
         layout.addWidget(ts_label, alignment=Qt.AlignmentFlag.AlignTop)
 
 
 # ======================================================================
-# Setor — worker e canvas
+# Setor — worker e widgets de donut
 # ======================================================================
 
 class SectorWorker(QThread):
-    """Busca distribuição por setor em background (GET /portfolio/by-sector)."""
+    """Busca distribuição por classe/setor em background (GET /portfolio/by-sector)."""
 
     data_ready     = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
@@ -1207,66 +1236,144 @@ class SectorWorker(QThread):
             self.error_occurred.emit(f"Erro: {exc}")
 
 
-class SectorBarCanvas(FigureCanvas):
+class SectorDonutWidget(QWidget):
     """
-    Gráfico de barras horizontais mostrando a distribuição da carteira
-    por setor. Cada barra mostra valor investido e % do portfólio.
+    Donut matplotlib + legenda lateral com barras de progresso.
+    Usado em cada aba da seção "Distribuição por Setor".
+
+    data: lista de dicts com keys 'label', 'value', 'count'.
+    colors: paleta de strings hex.
     """
 
-    _BG = "#1A1D2E"
+    _BG = "#222640"
 
-    def __init__(self, parent=None) -> None:
-        self._fig = Figure(facecolor=self._BG)
-        super().__init__(self._fig)
-        self.setParent(parent)
+    def __init__(
+        self,
+        title: str,
+        data: list[dict],
+        colors: list[str],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._title  = title
+        self._data   = data
+        self._colors = colors
+        self._build()
 
-    def update_data(self, sectors: list[dict]) -> None:
-        self._fig.clear()
-        if not sectors:
-            self.draw()
+    def _build(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        if not self._data:
+            lbl = QLabel(f"Sem dados de {self._title}")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: #4A4D63; font-size: 13px;")
+            layout.addWidget(lbl)
             return
 
-        n = len(sectors)
-        self._fig.set_size_inches(8, max(1.2, n * 0.55))
+        title_lbl = QLabel(self._title)
+        title_lbl.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #E8EAED;"
+        )
+        layout.addWidget(title_lbl)
 
-        ax = self._fig.add_subplot(111)
-        ax.set_facecolor(self._BG)
-        ax.figure.set_facecolor(self._BG)
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.tick_params(colors="#8B90A7", labelsize=8, length=0)
-        ax.xaxis.set_visible(False)
+        container = QWidget()
+        h = QHBoxLayout(container)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(20)
+        h.addWidget(self._build_donut(), stretch=2)
+        h.addWidget(self._build_legend(), stretch=3)
+        layout.addWidget(container)
 
-        labels = [s["sector"] for s in sectors]
-        values = [s["pct_portfolio"] for s in sectors]
-        invested = [s["total_invested"] for s in sectors]
-        colors = [
-            SECTOR_COLORS.get(lbl, SECTOR_COLORS["Não classificado"])
-            for lbl in labels
-        ]
+    def _build_donut(self) -> FigureCanvas:
+        bg_rgb = hex_to_rgb(self._BG)
+        fig    = Figure(figsize=(3.0, 3.0), facecolor=bg_rgb)
+        ax     = fig.add_subplot(111)
+        ax.set_facecolor(bg_rgb)
 
-        bars = ax.barh(labels, values, color=colors, height=0.55)
+        labels = [d["label"] for d in self._data]
+        values = [d["value"] for d in self._data]
+        colors = [self._colors[i % len(self._colors)] for i in range(len(labels))]
 
-        # Anotações em cada barra
-        for bar, lbl, pct, inv in zip(bars, labels, values, invested):
-            inv_str = f"R$ {inv:,.0f}".replace(",", ".")
-            ax.text(
-                bar.get_width() + 0.4,
-                bar.get_y() + bar.get_height() / 2,
-                f"{inv_str}  ({pct:.1f}%)",
-                va="center", ha="left",
-                color="#C8CAD8", fontsize=8,
+        ax.pie(
+            values,
+            colors=colors,
+            startangle=90,
+            wedgeprops={"width": 0.55, "edgecolor": self._BG, "linewidth": 2},
+        )
+        ax.set_aspect("equal")
+        fig.tight_layout(pad=0.3)
+
+        canvas = FigureCanvas(fig)
+        canvas.setFixedSize(200, 200)
+        canvas.setStyleSheet(f"background-color: {self._BG};")
+        return canvas
+
+    def _build_legend(self) -> QWidget:
+        widget = QWidget()
+        vbox = QVBoxLayout(widget)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(5)
+
+        total = sum(d["value"] for d in self._data)
+
+        for i, item in enumerate(self._data[:8]):
+            color  = self._colors[i % len(self._colors)]
+            pct    = item["value"] / total * 100 if total > 0 else 0
+            val_str = (
+                f"R$ {item['value']:,.0f}"
+                .replace(",", "X").replace(".", ",").replace("X", ".")
             )
 
-        ax.set_xlim(0, max(values) * 1.55 if values else 1)
-        ax.set_yticks(range(n))
-        ax.set_yticklabels(labels, color="#C8CAD8", fontsize=8)
-        ax.invert_yaxis()
+            row = QWidget()
+            row_h = QHBoxLayout(row)
+            row_h.setContentsMargins(0, 2, 0, 2)
+            row_h.setSpacing(6)
 
-        self._fig.tight_layout(pad=0.6)
-        self.setMinimumHeight(max(80, n * 34))
-        self.setMaximumHeight(max(80, n * 34))
-        self.draw()
+            dot = QLabel()
+            dot.setFixedSize(10, 10)
+            dot.setStyleSheet(
+                f"background-color: {color}; border-radius: 2px;"
+            )
+            row_h.addWidget(dot)
+
+            name_lbl = QLabel(item["label"])
+            name_lbl.setStyleSheet("color: #E0E2EA; font-size: 12px;")
+            name_lbl.setMaximumWidth(130)
+            row_h.addWidget(name_lbl, stretch=1)
+
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(int(pct))
+            bar.setFixedHeight(13)
+            bar.setMaximumWidth(80)
+            bar.setTextVisible(False)
+            bar.setStyleSheet(f"""
+                QProgressBar {{
+                    background: #2A2E4A; border-radius: 3px; border: none;
+                }}
+                QProgressBar::chunk {{
+                    background: {color}; border-radius: 3px;
+                }}
+            """)
+            row_h.addWidget(bar)
+
+            pct_lbl = QLabel(f"{pct:.1f}%")
+            pct_lbl.setStyleSheet(
+                f"color: {color}; font-size: 11px; font-weight: bold;"
+            )
+            pct_lbl.setFixedWidth(36)
+            row_h.addWidget(pct_lbl)
+
+            row.setToolTip(
+                f"{item['label']}: {val_str} ({pct:.1f}%)\n"
+                f"{item.get('count', 0)} ativo(s)"
+            )
+            vbox.addWidget(row)
+
+        vbox.addStretch()
+        return widget
 
 
 # ======================================================================
@@ -1385,9 +1492,32 @@ class DashboardPage(QWidget):
         self._sector_title.setVisible(False)
         self._content_layout.addWidget(self._sector_title)
 
-        self._sector_canvas = SectorBarCanvas()
-        self._sector_canvas.setVisible(False)
-        self._content_layout.addWidget(self._sector_canvas)
+        self._sector_tabs = QTabWidget()
+        self._sector_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #2E3250;
+                border-radius: 8px;
+                background: #222640;
+            }
+            QTabBar::tab {
+                background: #1A1D2E;
+                color: #8B90A7;
+                padding: 8px 16px;
+                border-radius: 4px 4px 0 0;
+                margin-right: 2px;
+                font-size: 12px;
+            }
+            QTabBar::tab:selected {
+                background: #222640;
+                color: #FFFFFF;
+                font-weight: bold;
+            }
+            QTabBar::tab:hover {
+                color: #E8EAED;
+            }
+        """)
+        self._sector_tabs.setVisible(False)
+        self._content_layout.addWidget(self._sector_tabs)
 
         # ── Alertas ────────────────────────────────────────────────────
         self._alerts_title = QLabel("Alertas Ativos")
@@ -1411,7 +1541,7 @@ class DashboardPage(QWidget):
         self._hist_toggle_btn.setChecked(False)
         self._hist_toggle_btn.setVisible(False)
         self._hist_toggle_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #8B90A7; border: none; font-size: 11px; }"
+            "QPushButton { background: transparent; color: #8B90A7; border: none; font-size: 12px; }"
             "QPushButton:hover { color: #C5CAE9; }"
         )
         self._hist_toggle_btn.clicked.connect(self._toggle_history)
@@ -1443,7 +1573,7 @@ class DashboardPage(QWidget):
         )
         self._charts_empty_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._charts_empty_msg.setStyleSheet(
-            f"color: {_TEXT}; font-size: 13px; padding: 40px;"
+            f"color: {_TEXT}; font-size: 14px; padding: 40px;"
             f"background: {_BG}; border-radius: 8px;"
         )
         self._charts_empty_msg.setVisible(False)
@@ -1652,12 +1782,71 @@ class DashboardPage(QWidget):
         self._row2_widget.setVisible(False)
 
     def _on_sector_ready(self, data: dict) -> None:
-        sectors = data.get("sectors", [])
-        if not sectors:
-            return
-        self._sector_canvas.update_data(sectors)
-        self._sector_title.setVisible(True)
-        self._sector_canvas.setVisible(True)
+        self._sector_tabs.clear()
+
+        # ── Aba "Todos": donut por classe de ativo ─────────────────────
+        chart_data = []
+        for label, key in _CLASS_KEYS.items():
+            items = data.get(key, [])
+            total = sum(i["value"] for i in items)
+            if total > 0:
+                chart_data.append({
+                    "label": label,
+                    "value": total,
+                    "count": len(items),
+                })
+        if chart_data:
+            colors_all = [_CLASS_COLORS[d["label"]] for d in chart_data]
+            self._sector_tabs.addTab(
+                SectorDonutWidget("Distribuição por Classe", chart_data, colors_all),
+                "Todos",
+            )
+
+        # ── Aba "Ações" ────────────────────────────────────────────────
+        if data.get("stocks"):
+            self._sector_tabs.addTab(
+                SectorDonutWidget("Ações por Setor", data["stocks"], STOCK_PALETTE),
+                "Ações",
+            )
+
+        # ── Aba "FIIs" ─────────────────────────────────────────────────
+        if data.get("fiis"):
+            self._sector_tabs.addTab(
+                SectorDonutWidget("FIIs por Segmento", data["fiis"], FII_PALETTE),
+                "FIIs",
+            )
+
+        # ── Aba "ETFs" ─────────────────────────────────────────────────
+        if data.get("etfs"):
+            self._sector_tabs.addTab(
+                SectorDonutWidget("ETFs", data["etfs"], ETF_PALETTE),
+                "ETFs",
+            )
+
+        # ── Aba "Tesouro" ──────────────────────────────────────────────
+        if data.get("treasury"):
+            self._sector_tabs.addTab(
+                SectorDonutWidget("Tesouro Direto", data["treasury"], TREASURY_PALETTE),
+                "Tesouro",
+            )
+
+        # ── Aba "Renda Fixa" ───────────────────────────────────────────
+        if data.get("fixed_income"):
+            self._sector_tabs.addTab(
+                SectorDonutWidget("Renda Fixa por Indexador", data["fixed_income"], FIXED_PALETTE),
+                "Renda Fixa",
+            )
+
+        # ── Aba "Cripto" ───────────────────────────────────────────────
+        if data.get("crypto"):
+            self._sector_tabs.addTab(
+                SectorDonutWidget("Criptomoedas", data["crypto"], CRYPTO_PALETTE),
+                "Cripto",
+            )
+
+        if self._sector_tabs.count() > 0:
+            self._sector_title.setVisible(True)
+            self._sector_tabs.setVisible(True)
 
     # ------------------------------------------------------------------
     # Helpers de UI
@@ -1685,7 +1874,7 @@ class DashboardPage(QWidget):
         self._hist_toggle_btn.setVisible(visible)
         if not visible:
             self._sector_title.setVisible(False)
-            self._sector_canvas.setVisible(False)
+            self._sector_tabs.setVisible(False)
 
     def _populate_debts(self, debts: list[dict]) -> None:
         # Limpa rows anteriores
@@ -1731,7 +1920,7 @@ class DashboardPage(QWidget):
 
         if not history:
             empty = QLabel("Nenhum alerta registrado no histórico.")
-            empty.setStyleSheet("color: #8B90A7; font-size: 12px; padding: 8px 0;")
+            empty.setStyleSheet("color: #8B90A7; font-size: 13px; padding: 8px 0;")
             self._hist_area.addWidget(empty)
             return
 
@@ -1770,10 +1959,10 @@ class DashboardPage(QWidget):
             header = QHBoxLayout()
             name_lbl = QLabel(cat)
             name_lbl.setStyleSheet(
-                f"color: {color}; font-size: 11px; font-weight: 600; background: transparent;"
+                f"color: {color}; font-size: 12px; font-weight: 600; background: transparent;"
             )
             val_lbl = QLabel(_fmt_brl(value))
-            val_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 10px; background: transparent;")
+            val_lbl.setStyleSheet(f"color: {_TEXT}; font-size: 11px; background: transparent;")
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             header.addWidget(name_lbl)
             header.addStretch()
@@ -1791,7 +1980,7 @@ class DashboardPage(QWidget):
                     border: none;
                     border-radius: 3px;
                     color: white;
-                    font-size: 9px;
+                    font-size: 10px;
                     text-align: center;
                 }}
                 QProgressBar::chunk {{

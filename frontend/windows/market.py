@@ -707,7 +707,7 @@ class BenchmarkDialog(QDialog):
         self._entry = entry
         self._client = client
         self._ticker = entry.get("ticker", "")
-        self._period = "1y"
+        self._period = "6m"
         self._worker: BenchmarkWorker | None = None
 
         self.setWindowTitle(f"Rentabilidade — {self._ticker}")
@@ -728,27 +728,53 @@ class BenchmarkDialog(QDialog):
         root.addWidget(title)
 
         # Seletor de período
-        period_row = QHBoxLayout()
-        period_row.addWidget(QLabel("Período:"))
-        self._period_btns: list[QPushButton] = []
+        period_bar = QWidget()
+        period_layout = QHBoxLayout(period_bar)
+        period_layout.setContentsMargins(0, 0, 0, 0)
+        period_layout.setSpacing(4)
+
         _period_tooltips = {
-            "1m": "Último mês",
-            "3m": "Últimos 3 meses",
-            "6m": "Últimos 6 meses",
-            "1y": "Último ano",
-            "3y": "Últimos 3 anos",
+            "1M": "Último mês",
+            "3M": "Últimos 3 meses",
+            "6M": "Últimos 6 meses",
+            "1A": "Último ano",
+            "3A": "Últimos 3 anos",
         }
-        for label, value in self._PERIODS:
-            btn = QPushButton(label)
-            btn.setProperty("class", "period-btn")
+        self._period_buttons: dict[str, QPushButton] = {}
+        _btn_style = """
+            QPushButton {
+                background: transparent;
+                color: #C8CAD8;
+                border: 1px solid #3D4166;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:checked {
+                background: #4A9EFF;
+                color: #FFFFFF;
+                border-color: #4A9EFF;
+            }
+            QPushButton:hover:!checked {
+                background: #242736;
+                color: #FFFFFF;
+            }
+        """
+        for code, _ in self._PERIODS:
+            btn = QPushButton(code)
+            btn.setToolTip(_period_tooltips.get(code, code))
             btn.setCheckable(True)
-            btn.setChecked(value == self._period)
-            btn.setToolTip(_period_tooltips.get(value, label))
-            btn.clicked.connect(lambda _, v=value: self._on_period_changed(v))
-            period_row.addWidget(btn)
-            self._period_btns.append(btn)
-        period_row.addStretch()
-        root.addLayout(period_row)
+            btn.setFixedSize(48, 32)
+            btn.setStyleSheet(_btn_style)
+            btn.clicked.connect(
+                lambda checked, p=code: self._change_period(p)
+            )
+            self._period_buttons[code] = btn
+            period_layout.addWidget(btn)
+
+        period_layout.addStretch()
+        self._period_buttons["6M"].setChecked(True)
+        root.addWidget(period_bar)
 
         # Carregamento
         self._loading_lbl = QLabel("Carregando dados…")
@@ -759,10 +785,10 @@ class BenchmarkDialog(QDialog):
         # Cards de retorno
         cards_row = QHBoxLayout()
         cards_row.setSpacing(12)
-        self._card_asset = _BenchmarkCard(self._ticker, "#4A9EFF")
-        self._card_cdi   = _BenchmarkCard("CDI",  "#00C896")
-        self._card_ibov  = _BenchmarkCard("IBOV", "#FFB347")
-        self._card_ipca  = _BenchmarkCard("IPCA", "#8B90A7")
+        self._card_asset = _BenchmarkCard(self._ticker, "#00C896", show_alpha=True)
+        self._card_cdi   = _BenchmarkCard("CDI",  "#C8CAD8")
+        self._card_ibov  = _BenchmarkCard("IBOV", "#4A9EFF")
+        self._card_ipca  = _BenchmarkCard("IPCA", "#F39C12")
         for card in [self._card_asset, self._card_cdi, self._card_ibov, self._card_ipca]:
             card.setVisible(False)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -793,21 +819,31 @@ class BenchmarkDialog(QDialog):
         # Fechar
         close_row = QHBoxLayout()
         close_row.addStretch()
-        close_btn = QPushButton(_svg_icon("close", "#FF6B6B", 14), "Fechar")
-        close_btn.setStyleSheet(
-            "color: #FF6B6B; border-color: #FF6B6B; padding: 8px 20px; font-weight: 600;"
-        )
-        close_btn.setToolTip("Fechar comparação de rentabilidade")
-        close_btn.clicked.connect(self.reject)
+        close_btn = QPushButton("Fechar")
+        close_btn.setIcon(_svg_icon("cancel", "#FF6B6B"))
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #FF6B6B;
+                border: 1px solid #FF4D4D;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 77, 77, 0.13);
+            }
+        """)
+        close_btn.clicked.connect(self.close)
         close_row.addWidget(close_btn)
         root.addLayout(close_row)
 
-    def _on_period_changed(self, period: str) -> None:
-        self._period = period
-        for btn, (_, v) in zip(self._period_btns, self._PERIODS):
-            btn.setChecked(v == period)
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
+    def _change_period(self, code: str) -> None:
+        # code é o label visível ("1M","6M","1A"…); _PERIODS mapeia para valor backend
+        backend_val = dict(self._PERIODS).get(code, "6m")
+        self._period = backend_val
+        for c, btn in self._period_buttons.items():
+            btn.setChecked(c == code)
         self._load()
 
     def _load(self) -> None:
@@ -840,7 +876,13 @@ class BenchmarkDialog(QDialog):
             sign = "+" if v >= 0 else ""
             return f"{sign}{v:.2f}%"
 
-        self._card_asset.set_value(_fmt_ret(asset_ret))
+        asset_color = _C_POS if asset_ret >= 0 else _C_NEG
+        self._card_asset.set_value(
+            _fmt_ret(asset_ret),
+            color=asset_color,
+            alpha_text=f"Alpha CDI: {'+' if alpha_cdi >= 0 else ''}{alpha_cdi:.2f}%",
+            alpha_color=_C_POS if alpha_cdi >= 0 else _C_NEG,
+        )
         self._card_cdi.set_value(_fmt_ret(cdi_ret))
         self._card_ibov.set_value(_fmt_ret(ibov_ret))
         self._card_ipca.set_value(_fmt_ret(ipca_ret))
@@ -882,9 +924,10 @@ class BenchmarkDialog(QDialog):
 class _BenchmarkCard(QFrame):
     """Mini card para mostrar retorno de um ativo/benchmark."""
 
-    def __init__(self, title: str, color: str) -> None:
+    def __init__(self, title: str, color: str, show_alpha: bool = False) -> None:
         super().__init__()
         self.setObjectName("summaryCard")
+        self._default_color = color
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 12)
         layout.setSpacing(4)
@@ -897,8 +940,27 @@ class _BenchmarkCard(QFrame):
         self._val.setStyleSheet(f"color: {color}; font-size: 18px; font-weight: 700;")
         layout.addWidget(self._val)
 
-    def set_value(self, text: str) -> None:
+        self._alpha_lbl: QLabel | None = None
+        if show_alpha:
+            self._alpha_lbl = QLabel("")
+            self._alpha_lbl.setStyleSheet(f"color: {_C_MUTED}; font-size: 11px;")
+            layout.addWidget(self._alpha_lbl)
+
+    def set_value(
+        self,
+        text: str,
+        color: str | None = None,
+        alpha_text: str = "",
+        alpha_color: str | None = None,
+    ) -> None:
+        c = color or self._default_color
         self._val.setText(text)
+        self._val.setStyleSheet(f"color: {c}; font-size: 18px; font-weight: 700;")
+        if self._alpha_lbl is not None:
+            self._alpha_lbl.setText(alpha_text)
+            self._alpha_lbl.setStyleSheet(
+                f"color: {alpha_color or _C_MUTED}; font-size: 11px;"
+            )
 
 
 # ======================================================================

@@ -110,6 +110,37 @@ async def get_dividends_summary(
     )
 
 
+@router.get("/total/{asset_id}")
+async def get_dividends_total_for_asset(
+    asset_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Retorna total de proventos recebidos e yield on cost para um ativo."""
+    from decimal import Decimal
+    from sqlalchemy import func, select as _sel
+    from backend.models.dividend import Dividend
+    from backend.repositories.asset_repository import AssetRepository
+
+    result = await db.execute(
+        _sel(func.coalesce(func.sum(Dividend.total_amount), Decimal("0")))
+        .where(Dividend.asset_id == asset_id)
+    )
+    total_dividends = result.scalar() or Decimal("0")
+
+    repo = AssetRepository(db)
+    qty = await repo.get_consolidated_position(asset_id)
+    avg = await repo.calculate_avg_price(asset_id)
+    cost = qty * avg
+
+    yoc = float(total_dividends / cost * 100) if cost > 0 else 0.0
+
+    return {
+        "asset_id":        asset_id,
+        "total_dividends": float(total_dividends),
+        "yield_on_cost":   yoc,
+    }
+
+
 @router.get("", response_model=list[DividendOut])
 async def list_dividends(
     start_date: date | None = Query(None),

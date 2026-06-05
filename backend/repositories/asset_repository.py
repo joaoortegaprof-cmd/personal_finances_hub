@@ -287,3 +287,41 @@ class AssetRepository(BaseRepository[Asset]):
             }
             for row in result.all()
         ]
+
+
+    async def get_total_dividends_for_asset(self, asset_id: int) -> Decimal:
+        """Soma todos os dividendos recebidos para um ativo."""
+        from backend.models.dividend import Dividend
+
+        result = await self._session.execute(
+            select(
+                func.coalesce(func.sum(Dividend.total_amount), Decimal("0"))
+            ).where(Dividend.asset_id == asset_id)
+        )
+        return result.scalar() or Decimal("0")
+
+    async def get_total_return_with_dividends(self, asset_id: int) -> dict:
+        """Retorna rentabilidade total incluindo dividendos recebidos."""
+        from backend.models.dividend import Dividend
+
+        qty = await self.get_consolidated_position(asset_id)
+        avg_price = await self.calculate_avg_price(asset_id)
+        cost = qty * avg_price
+
+        div_result = await self._session.execute(
+            select(
+                func.coalesce(func.sum(Dividend.total_amount), Decimal("0"))
+            ).where(Dividend.asset_id == asset_id)
+        )
+        total_dividends = div_result.scalar() or Decimal("0")
+
+        return {
+            "quantity": float(qty),
+            "avg_price": float(avg_price),
+            "total_cost": float(cost),
+            "total_dividends": float(total_dividends),
+            "total_return_with_dividends": float(total_dividends),
+            "yield_on_cost": float(
+                total_dividends / cost * 100 if cost > 0 else 0
+            ),
+        }

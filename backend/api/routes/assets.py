@@ -325,75 +325,84 @@ async def get_risk_analysis(db: AsyncSession = Depends(get_db)):
 @portfolio_router.get("/by-sector")
 async def get_portfolio_by_sector(db: AsyncSession = Depends(get_db)):
     """
-    Retorna a distribuição da carteira agrupada por setor do ativo.
+    Retorna a distribuição da carteira agrupada por classe e setor/segmento.
 
-    Considera apenas posições com quantidade positiva (BUY consolidado).
-    Ativos sem setor definido são agrupados em "Não classificado".
+    Classifica automaticamente via sector_mapper (sem depender do campo
+    `sector` preenchido manualmente). Retorna listas separadas por classe
+    de ativo: stocks, fiis, etfs, treasury, fixed_income, crypto, other.
     """
-    from sqlalchemy import case, func, select
+    from sqlalchemy import select
+    from frontend.components.sector_mapper import get_sector
 
-    result = await db.execute(
-        select(
-            Asset.sector,
-            Asset.ticker,
-            Asset.name,
-            Asset.asset_type,
-            func.sum(
-                case(
-                    (
-                        (AssetPosition.operation_type == OperationType.BUY)
-                        & (AssetPosition.quantity > 0),
-                        AssetPosition.quantity,
-                    ),
-                    (
-                        (AssetPosition.operation_type == OperationType.SELL)
-                        & (AssetPosition.quantity < 0),
-                        AssetPosition.quantity,
-                    ),
-                    else_=0,
-                )
-            ).label("net_qty"),
-            func.sum(
-                case(
-                    (
-                        (AssetPosition.operation_type == OperationType.BUY)
-                        & (AssetPosition.quantity > 0),
-                        AssetPosition.quantity * AssetPosition.unit_price,
-                    ),
-                    else_=0,
-                )
-            ).label("cost"),
-        )
-        .join(AssetPosition, Asset.id == AssetPosition.asset_id)
-        .group_by(Asset.id)
-    )
-    rows = result.all()
+    result = await db.execute(select(Asset))
+    all_assets = result.scalars().all()
 
-    sectors: dict[str, dict] = {}
-    total = 0.0
-    for row in rows:
-        net_qty = float(row.net_qty or 0)
-        if net_qty <= 0:
+    repo = AssetRepository(db)
+
+    stocks_by_sector:      dict[str, list] = {}
+    fiis_by_segment:       dict[str, list] = {}
+    etfs_by_name:          dict[str, list] = {}
+    treasury_by_type:      dict[str, list] = {}
+    fixed_income_by_type:  dict[str, list] = {}
+    crypto_by_name:        dict[str, list] = {}
+    other_by_type:         dict[str, list] = {}
+
+    for asset in all_assets:
+        qty = await repo.get_consolidated_position(asset.id)
+        if qty <= 0:
             continue
-        sector = row.sector or "Não classificado"
-        cost = float(row.cost or 0)
-        if sector not in sectors:
-            sectors[sector] = {"sector": sector, "assets": [], "total_invested": 0.0, "pct_portfolio": 0.0}
-        sectors[sector]["assets"].append({
-            "ticker": row.ticker,
-            "name": row.name,
-            "type": str(row.asset_type.value) if hasattr(row.asset_type, "value") else str(row.asset_type),
-            "invested": cost,
-        })
-        sectors[sector]["total_invested"] += cost
-        total += cost
+        avg = await repo.calculate_avg_price(asset.id)
+        if avg <= 0:
+            continue
+        value = float(qty * avg)
+        ticker = asset.ticker or asset.name
+        atype  = asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type)
+        sector = get_sector(ticker, atype)
 
-    for s in sectors.values():
-        s["pct_portfolio"] = s["total_invested"] / total * 100 if total > 0 else 0.0
+        entry = {
+            "ticker": ticker,
+            "name":   asset.name,
+            "value":  value,
+            "qty":    float(qty),
+        }
+
+        if atype == "acao" or atype == "acao_internacional":
+            stocks_by_sector.setdefault(sector, []).append(entry)
+        elif atype == "fii":
+            fiis_by_segment.setdefault(sector, []).append(entry)
+        elif atype == "etf":
+            etfs_by_name.setdefault(ticker, []).append(entry)
+        elif atype == "tesouro_direto":
+            label = asset.indexer.value if asset.indexer else "Prefixado"
+            treasury_by_type.setdefault(label, []).append(entry)
+        elif atype == "renda_fixa":
+            label = asset.indexer.value if asset.indexer else "CDI"
+            fixed_income_by_type.setdefault(label, []).append(entry)
+        elif atype == "criptomoeda":
+            crypto_by_name.setdefault(ticker, []).append(entry)
+        else:
+            other_by_type.setdefault(atype, []).append(entry)
+
+    def aggregate(groups: dict) -> list[dict]:
+        out = []
+        for name, assets in groups.items():
+            total = sum(a["value"] for a in assets)
+            out.append({
+                "label":  name,
+                "value":  total,
+                "assets": assets,
+                "count":  len(assets),
+            })
+        return sorted(out, key=lambda x: x["value"], reverse=True)
 
     return {
-        "sectors": sorted(sectors.values(), key=lambda x: x["total_invested"], reverse=True),
-        "total": total,
+        "stocks":       aggregate(stocks_by_sector),
+        "fiis":         aggregate(fiis_by_segment),
+        "etfs":         aggregate(etfs_by_name),
+        "treasury":     aggregate(treasury_by_type),
+        "fixed_income": aggregate(fixed_income_by_type),
+        "crypto":       aggregate(crypto_by_name),
+        "other":        aggregate(other_by_type),
     }
 
 

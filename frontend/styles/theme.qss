@@ -151,21 +151,21 @@ QFrame#summaryCard:hover {
 
 QLabel#cardTitle {
     color: #8B90A7;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.8px;
 }
 
 QLabel#cardValue {
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 700;
 }
 
 /* ---- Seções e títulos ------------------------------------- */
 QLabel#sectionTitle {
     color: #C8CAD8;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
 }
 
